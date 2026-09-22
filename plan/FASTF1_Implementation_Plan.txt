@@ -1,0 +1,763 @@
+FASTF1 LIVE ANALYTICS, AI DRIVER COACH, AND RACE ASSISTANT
+IMPLEMENTATION PLAN (DATASET- AND LIVE-DATA-GROUNDED)
+==========================================================
+
+Version: 4.0
+Status: In progress (P0 foundation + live provider POC started)
+Basis: Inspected the dataset in dataset/kaggledataset/ and
+       dataset/huggingface/, and probed the OpenF1 live API
+       (api.openf1.org) on 2026-09-22 to confirm its JSON payloads and
+       runtime behavior. Environment: Python 3.10, fastf1 3.8.3,
+       pandas 2.3.3, numpy 2.2.6, pyarrow 25.0.1, matplotlib 3.10.9,
+       requests-cache, scipy, pyyaml; streamlit 1.64.0 and plotly added.
+
+Current implementation state (what already exists in the repo):
+- pyproject.toml with f1-analytics package (src/f1_analytics).
+- config.py with canonical dataset paths and live settings.
+- src/f1_analytics/live/ with LiveProvider interface, OpenF1 client/
+  provider (positions, laps, intervals, weather, race_control, stints,
+  drivers, sessions), and a deterministic MockProvider.
+- dataset_overview.txt regenerated with live-data contents.
+
+This plan drives the remaining P0-P3 work.
+
+Scope: A) historical analytics dashboard, B) live race tracking that
+shares one schema with history, C) an evidence-based AI Driver Coach,
+D) an LLM-based Race Assistant that answers questions grounded in the
+historical and live record. Offline operation is always required:
+live feed, LLM, and telemetry are optional extensions.
+
+
+1. PROJECT DEFINITION
+---------------------
+Build a Formula 1 analytics platform with four integrated layers:
+
+1. HISTORICAL ANALYTICS: the repository is the historical record for an
+   analytical dashboard (drivers, constructors, circuits, 1950-2026).
+2. LIVE TRACKING: OpenF1 API JSON is extracted and rendered live on the
+   dashboard; live state objects mirror the f1.db schemas so analytics,
+   coaching, and the assistant operate uniformly over "now" and "then".
+3. AI DRIVER COACH: numerical, evidence-based performance reviews and
+   recommendations over historical and live laps.
+4. LLM RACE ASSISTANT: users ask questions about the race record and
+   receive answers traceable to retrieved data.
+
+Historical analytics and offline prediction are the foundation; live
+timing, telemetry, AI coaching, and the LLM assistant are optional
+extensions and must not be required for the offline application.
+
+
+2. SUCCESS CRITERIA
+-------------------
+The first release must:
+
+1. Load and validate all five local data assets: 14 Kaggle CSVs,
+   24 f1.db tables, driver_profiles.parquet, training_dataset.parquet,
+   and tracks.yaml.
+2. Detect CSV-versus-database drift (CSV snapshot is stale relative to
+   f1.db) and report it instead of silently mixing sources.
+3. Provide repeatable driver, constructor, and circuit analytics backed
+   by f1.db, including lap-level pace from fastf1_laps.
+4. Produce a versioned, leakage-safe training table from
+   training_dataset.parquet (5,094 rows, 2014-2026) with a documented
+   missing-value policy for all 15 columns that contain nulls.
+5. Train and evaluate the four targets the data already defines:
+   finish, is_dnf, is_podium, and is_winner.
+6. Display analytics, predictions, and LIVE session data in Streamlit,
+   with model version, prediction timing, missing inputs, uncertainty,
+   live-data freshness labels, and a graceful offline state.
+7. Track live race data through a provider interface whose state mirrors
+   the f1.db schemas (confirmed: OpenF1 positions/laps/intervals/
+   weather/race_control/stints/drivers), and keep the dashboard fully
+   functional with no live feed.
+8. Provide the AI Driver Coach (post-lap, post-session, then live) with
+   evidence and explicit conditions and confidence.
+9. Provide the LLM Race Assistant: a chat page whose answers cite and are
+   traceable to retrieved historical/live data, and that refuses to
+   invent facts outside its coverage.
+
+The complete product may additionally provide reproducible race
+simulation, replayable live timing, robust live-data failure states,
+numerical telemetry analysis, and optional AI explanations.
+
+
+3. PRIORITY LEVELS
+------------------
+P0 - Foundation: repository setup, data validation (incl. drift and
+     coverage checks), analytics over f1.db, feature contracts for the
+     31-column training table, leakage controls, baseline models,
+     evaluation, and the first dashboard with the LIVE page.
+
+P1 - Product extensions: race simulation driven by tracks.yaml and
+     driver_profiles.parquet, Monte Carlo outcomes, winner prediction,
+     calibration, sprint-aware features, and hard live-timing behavior
+     (session resolution, polling, staleness, replay).
+
+P2 - Advanced analysis: fastf1_laps telemetry analysis, circuit_corners
+     geometry, reference laps, braking, throttle, racing line,
+     post-session coaching, and the LLM Race Assistant.
+
+P3 - Optional production features: live AI coaching, FastAPI, Docker,
+     cloud deployment, monitoring, automated retraining.
+
+
+4. DATASET AND LIVE-DATA INVENTORY
+----------------------------------
+Canonical data directory: dataset/
+
+4.1 SOURCE HIERARCHY (decide once, enforce everywhere)
+
+    f1.db                 CANONICAL for historical relational data.
+                          1950-2026, 1,171 races. Superset of the CSVs.
+    kaggle CSVs           PORTABLE SNAPSHOT 1950-2024, 1,125 races.
+                          Stale (46 races / 476 results behind f1.db).
+    training_dataset.parquet  CANONICAL model input, 5,094 x 31,
+                          2014-2026, 255 races, 63 drivers, 22
+                          constructors, 32 circuits.
+    driver_profiles.parquet   CANONICAL driver ratings, 379 x 18,
+                          normalized 0-1 ratings.
+    tracks.yaml           CANONICAL simulation parameters, 24 circuits
+                          keyed by circuitRef (GAP: 32 vs 24 -> needs
+                          circuitId->circuitRef map + defaults).
+    OpenF1 API (runtime)  LIVE + 2023+ history. Free, key-less, JSON.
+                          Never persisted in the canonical folder.
+    fastf1.livetiming 3.8.3 (optional)  Authoritative full-session
+                          recordings; F1TV account; record-then-parse.
+    topic_results*.jsonl  EXCLUDED (CIA documents, not F1).
+
+4.2 KAGGLE CSVs - 14 files (measured row counts)
+
+    circuits 77, constructors 212, drivers 861, races 1,125,
+    results 26,759, qualifying 10,494, lap_times 589,081,
+    pit_stops 11,371, driver_standings 34,863,
+    constructor_standings 13,391, constructor_results 12,625,
+    sprint_results 360, seasons 75, status 139.
+    Relationships: races.raceId -> results/qualifying/lap_times/
+    pit_stops/standings/sprint_results; drivers.driverId,
+    constructors.constructorId, circuits.circuitId, status.statusId.
+
+4.3 f1.db - 24 tables (measured)
+
+    circuits 78, constructors 214, drivers 865, races 1,171,
+    seasons 77, results 27,235, qualifying 11,058, lap_times 619,804,
+    pit_stops 12,294, driver_standings 35,449,
+    constructor_standings 13,675, constructor_results 12,909,
+    sprint_results 524, status 140, results_shared_drives 91.
+    Database-only tables:
+    fastf1_laps 481,075 (2018-2026; Race 193,498, FP1 81,015, FP2
+      85,972, FP3 50,890, Qualifying 55,016, Sprint 8,830, Sprint
+      Qualifying 4,378, Sprint Shootout 1,476). Columns include
+      time_sec, s1/s2/s3, compound, tyre_life, stint, position,
+      speed_trap/speed_fl/speed_i1/speed_i2, is_accurate,
+      fresh_tyre, track_status, per-lap weather.
+    session_weather 86,433; race_control 37,155; safety_cars 364;
+      red_flags 98; circuit_corners 14,361; fatal accident tables.
+
+4.4 PROCESSED PARQUET
+
+    training_dataset.parquet - 31 columns; targets finish (1-22),
+      is_dnf (16.7%), is_podium (15.0%), is_winner (5.0%). Rows per
+      year 335-468 (2014-2025); 2026 partial (88 rows, holdout).
+      Measured null profile:
+        practice_pace_pct 36.7%, tyre_deg_rate 35.9%,
+        constructor_avg_speed_trap 32.6%, air_temp/track_temp/rainfall
+        32.5%, track_avg_finish & track_best_finish 20.4%,
+        safety_car_prob 5.1%, rolling_avg_* & dnf_rate_rolling_10 0.8%,
+        pit_stop_avg_ms 0.4%, constructor rolling 0.4%.
+      Null classes: NOT APPLICABLE / STRUCTURAL-UNAVAILABLE /
+      COLD START / TRUE ZERO. Never blind-fill.
+
+    driver_profiles.parquet - 379 drivers; counts + ratings
+      (quali_dominance, race_pace, consistency, wet_mastery,
+      overtaking, teammate_dominance, peak_rating, overall_rating).
+
+4.5 tracks.yaml - 24 circuits (see 4.1 gap note).
+
+4.6 OPENF1 LIVE API - CONFIRMED JSON SCHEMAS (probed 2026-09-22)
+
+    /v1/sessions?year=2026          131 sessions surfaced. Fields:
+      session_key, session_type (Practice/Qualifying/Race incl. Sprint
+      variants), session_name, date_start, date_end, meeting_key,
+      circuit_key, circuit_short_name, country_code/name, location,
+      gmt_offset, year, is_cancelled.
+      Example: Melbourne Race session_key 11234, meeting_key 1279,
+      circuit_key 10, 2026-03-08 04:00-06:00 UTC, country AUS.
+
+    /v1/drivers?session_key=X       22 drivers in 2026 across 11 teams
+      (McLaren, Red Bull Racing, Ferrari, Mercedes, Audi, Cadillac,
+      Alpine, Haas, Williams, Aston Martin, Racing Bulls). Fields:
+      driver_number, full_name, broadcast_name, name_acronym,
+      team_name, team_colour (hex no '#'), headshot_url, first_name,
+      last_name, country_code.
+
+    /v1/position?session_key=X      One row per position sample: date,
+      session_key, meeting_key, driver_number, position.
+      Melbourne Race: 531 samples.
+
+    /v1/laps?session_key=X          Per lap: lap_number, lap_duration,
+      duration_sector_1/2/3, i1_speed, i2_speed, st_speed,
+      is_pit_out_lap, segments_sector_1/2/3, date_start.
+      Melbourne Race: 1,002 rows.
+
+    /v1/intervals?session_key=X     date, driver_number, gap_to_leader,
+      interval. Melbourne Race: 22,276 rows. NOT always available (a
+      2026 pre-season practice returned 404) -> best-effort only.
+
+    /v1/weather?session_key=X       air_temperature, track_temperature,
+      humidity, pressure, rainfall, wind_speed, wind_direction, date.
+      Melbourne Race: 148 rows.
+
+    /v1/race_control?session_key=X  date, driver_number, lap_number,
+      category, flag, scope, sector, qualifying_phase, message.
+      Melbourne Race: 169 messages. Content is untrusted DATA for the
+      assistant (prompt-injection guardrail).
+
+    /v1/stints?session_key=X        stint_number, driver_number,
+      lap_start, lap_end (null = still running), compound,
+      tyre_age_at_start.
+
+    /v1/car_data and /v1/location   Telemetry (speed, rpm, gear,
+      throttle, brake, drs) and car positions. Unconstrained queries
+      return HTTP 422 "too much data"; MUST be narrowed
+      (?session_key=X&driver_number=N&date<=T or date range).
+      Not polled by default on the dashboard.
+
+    OBSERVED RUNTIME BEHAVIOR:
+    - Session resolution order: ongoing (date_start <= now < date_end)
+      -> next upcoming -> most recent finished.
+    - FINISHED and LIVE sessions return data; UPCOMING sessions return
+      EMPTY lists for position/laps/weather/etc. The dashboard must
+      render empty snapshots as "no data for this session yet".
+    - Rate limits: 3 req/s and 30 req/min free tier -> poll ~4-5s
+      with caching; never tighter.
+    - Historical depth: 2023 season onwards only. Pre-2023 falls back
+      to f1.db.
+    - Live delay ~3 seconds.
+
+    MAPPING TO LOCAL SCHEMAS (single shape for live + history):
+      position/intervals -> lap_times style positions/gaps
+      laps               -> fastf1_laps (time_sec, s1/s2/s3, speeds)
+      weather            -> session_weather
+      race_control       -> race_control (category/flag/message)
+      stints             -> pit_stops / tyre lifecycle
+      SC/VSC/red flag    -> race_control flags (safety_cars/red_flags
+                            tables historically)
+
+4.7 MISSING-VALUE AND LIVE-DATA QUALITY RULES
+- Classify every null (4.4); never treat null weather as "dry".
+- Live data carries a source + fetched_at label; "no live feed" is an
+  unavailable-feed state, never fabricated data.
+- CSV-vs-DB drift is reported, never silently mixed.
+
+
+5. REPOSITORY STRUCTURE
+-----------------------
+fastf1-python/
+|
+├── dataset/
+│   ├── kaggledataset/          # 14 CSVs (snapshot, 1950-2024)
+│   └── huggingface/
+│       ├── f1.db
+│       ├── training_dataset.parquet
+│       ├── driver_profiles.parquet
+│       ├── tracks.yaml
+│       └── topic_results*.jsonl  # excluded
+├── src/
+│   └── f1_analytics/
+│       ├── config.py           # paths, seeds, year ranges, live settings
+│       ├── data/               # CSV, Parquet, SQLite, YAML loaders
+│       ├── preprocessing/      # cleaning, schemas, validation, drift
+│       ├── features/           # feature contracts, leakage controls
+│       ├── analytics/          # driver, constructor, circuit queries
+│       ├── models/             # training, evaluation, calibration
+│       ├── simulation/         # race, tire, weather, SC, strategy
+│       ├── database/           # connections, queries, repositories
+│       ├── live/               # providers: OpenF1 (done), fastf1
+│       │                       #   archive, replay, mock; stream pipes
+│       ├── reference/          # best-lap and comparison references
+│       ├── ai_coach/           # numerical analysis, recommendations
+│       └── assistant/          # LLM Race Assistant (Phase 11)
+│           ├── router.py  tools.py  grounding.py
+│           ├── llm_client.py     guardrails.py
+├── dashboard/
+│   ├── app.py                   # Streamlit, incl. LIVE page (P0/M4)
+│   └── pages/
+├── models/
+├── notebooks/
+├── tests/
+│   ├── fixtures/                # corrupt/edge cargo + live API samples
+├── requirements.txt             # pinned
+├── pyproject.toml               # done
+├── dataset_overview.txt         # regenerated with live data
+├── README.md
+└── Dockerfile
+
+
+6. PHASE 0 - FOUNDATION
+-----------------------
+Partially done. Remaining:
+
+- Finish config contracts (seeds, train/val/test boundaries).
+- Document Python 3.10; pin full requirements.txt (scikit-learn,
+  pytest + optional xgboost/lightgbm, LLM client).
+- Record provenance/license for all sources.
+- Add tests command that passes offline (no network, no LLM key).
+- Ensure app boots with assistant disabled and provider unavailable.
+
+Acceptance: clean install passes tests offline; config resolves every
+path; package imports without path hacks (editable install done).
+
+
+7. PHASE 1 - DATA INGESTION AND VALIDATION
+-------------------------------------------
+Implement loaders for CSV, Parquet, SQLite, YAML over the schema
+contracts in section 4. Validation covers: existence, types/dates,
+primary-key uniqueness, FK resolution/orphans, numeric ranges,
+duplicates (incl. results_shared_drives), and null profiles measured
+per section 4.4.
+
+Drift checks: CSV vs f1.db row parity (known baselines in 4.2/4.3);
+fastf1_laps and session_weather must be 2018-2026; tracks.yaml mapping
+coverage (32 vs 24 circuits) must be reported.
+
+Live-data validation is folded into Phase 7 (empty snapshots,
+422 handling, rate-limit math).
+
+Acceptance: schema checks for every source; CLI validation report;
+invalid fixtures fail with actionable errors; drift report prints
+known deltas.
+
+
+8. PHASE 2 - DATABASE AND HISTORICAL ANALYTICS
+----------------------------------------------
+All analytics query f1.db.
+
+Driver analytics: wins/podiums/avg finish/quali from results and
+qualifying; pace/consistency/sector pace from fastf1_laps (Race
+session, 193,498 laps, 2018-2026, is_accurate filter); wet-weather via
+rainfall>0; overtaking from lap position gains; teammate comparison;
+driver_profiles ratings view.
+
+Constructor analytics: points/wins from constructor_standings; avg
+finish/DNF from results x status (140 statuses, DNF = not finishers);
+pit-stop duration from pit_stops; speed traps from fastf1_laps.
+
+Circuit analytics: winners/avg lap times; safety cars (364) and red
+flags (98); race_control summaries (37,155); tracks.yaml overlay per
+circuitRef; corner profile from circuit_corners (14,361).
+
+These functions double as the Race Assistant's read-only tools, each
+returning typed rows + a citable summary.
+
+Acceptance: deterministic results cross-checked against direct SQL on
+10 queries; dashboard views per category; 2018-2026 pace limits labeled.
+
+
+9. PHASE 3 - FEATURE ENGINEERING AND LEAKAGE CONTROL
+----------------------------------------------------
+The training table exists; this phase fixes its contract and audit.
+
+Prediction contracts: 1) pre-qualifying (no grid/quali features),
+2) post-qualifying (grid + quali ok, no race targets), 3) post-sprint
+(524 DB sprint rows), 4) live-race (data received up to timestamp).
+
+Feature contract: document all 24 inputs (grid group, driver form,
+track history, teammate, constructor, session/technical, conditions)
+with source, availability time, null class, valid contracts.
+
+Leakage controls: chronological sort; prior-races-only rolling stats;
+train-only imputers; availability gates (practice_pace_pct 2018+,
+pit_stop_avg_ms is post-race -> decide drop or historical prior,
+weather = forecast for pre-race); targets excluded; walk-forward.
+
+Known issues: pit_stop_avg_ms leakage decision; 2026 88-row holdout;
+high-cardinality IDs encoded via features not one-hot.
+
+Acceptance: feature audit with availability times; a deliberately
+leaking feature is rejected; versioned reproducible table (5,094 x 31).
+
+
+10. PHASE 4 - BASELINE MACHINE LEARNING
+---------------------------------------
+Targets and splits fixed by data: finish (regression/ranking),
+is_dnf (16.7%), is_podium (15.0%), is_winner (5.0%, race-level
+ranking). Split: train 2014-2022, validation 2023-2024, test 2025;
+2026 = future holdout.
+
+Baselines first: mean/median finish, grid-position, recent-form,
+logistic regression (classifiers), ridge/elastic-net (finish).
+Advanced only after: HistGradientBoosting (native nulls; preferred),
+Random Forest, XGBoost/LightGBM if licensing allows.
+
+Missing-value handling is an evaluation axis: S1 imputation+indicators
+vs S2 native nulls; metrics reported by null stratum.
+
+Evaluation: chronological + walk-forward; no random-only split;
+breakdowns by season/circuit type/driver rating tercile/grid bucket;
+calibration (ECE/Brier) for classifiers; race-level winner scores
+(MRR, top-1) not row accuracy.
+
+Acceptance: advanced beats/explains baselines; test later than train;
+winner race-level scored; artifacts re-load with fixed-seed metrics;
+pit_stop_avg_ms decision enforced.
+
+
+11. PHASE 5 - FIRST DASHBOARD MVP (incl. LIVE page)
+---------------------------------------------------
+Use Streamlit and Plotly. Pages:
+
+- Historical analytics, Driver comparison, Constructor comparison,
+  Circuit explorer
+- LIVE session (positions/gaps, laps, weather, race control, stints)
+- Race prediction, Model performance
+- Driver coach, Race assistant
+- Data health (validation, drift, nulls, coverage)
+
+Every prediction view shows selected race, contract, output,
+uncertainty, model version, data freshness, missing inputs,
+evaluation. Probabilities never presented as guarantees.
+
+LIVE page behavior (Phase 7 supplies the snapshot):
+- Provider status header (openf1 | mock | offline).
+- Live indicator from is_live + fetched_at; staleness shown.
+- Auto-refresh at configurable poll (>=5s) via st.rerun(seconds=...).
+- Empty upcoming-session and error states rendered, not crashed.
+- "No live feed - showing last known/historical" banner when offline.
+
+Acceptance: starts with one command; missing data explained; live page
+degrades gracefully; data health surfaces coverage limits
+(CSV ends 2024, fastf1_laps starts 2018, tracks.yaml 24/32, 2026
+partial, OpenF1 2023+).
+
+
+12. PHASE 6 - RACE SIMULATION
+-----------------------------
+Inputs: driver_profiles ratings (pace priors), grid from training/
+results, tracks.yaml parameters, calibration targets (safety_cars 364,
+red_flags 98, DNF 16.7%, pit_stop durations).
+
+Build order: pace -> grid -> circuit (with mapping table + defaults,
+hard failure on unmapped) -> tyre degradation -> pit loss -> weather ->
+overtaking -> SC/red flag -> strategy -> lap-by-lap.
+
+Monte Carlo: seed + run count, named distributions, historical
+calibration (SC frequency, DNF rate, win concentration 2014-2025),
+finish/win/podium/DNF/strategy frequencies, confidence intervals.
+
+Outputs labeled hypothetical; unmapped circuits reported loudly;
+assistant may cite simulations only with the "hypothetical" label.
+
+
+13. PHASE 7 - LEVEL 1 LIVE TIMING (CONFIRMED API BEHAVIORS)
+-----------------------------------------------------------
+All providers sit behind one LiveProvider interface (implemented:
+OpenF1LiveProvider, MockProvider; planned: replay, fastf1 archive).
+All live state mirrors f1.db schemas (section 4.6 mapping).
+
+13.1 OPENF1 PROVIDER (default) - implement as probed
+
+- Session resolution: ongoing -> next upcoming -> most recent finished,
+  from /v1/sessions (131 sessions in 2026). Respect is_live defined by
+  date_start <= now < date_end.
+- Fetch set per refresh (one snapshot = bounded requests):
+    /v1/drivers, /v1/position, /v1/laps, /v1/weather,
+    /v1/race_control, /v1/stints, /v1/intervals (best-effort).
+- Leaderboard = last position sample per driver joined to drivers
+  (team + colour) and intervals (gap_to_leader, interval) when present.
+- Latest laps = last non-null lap_duration per driver with lap_number
+  and sector durations.
+- Weather = latest sample; rainfall must stay a real 0 when 0.
+- Empty-data rules: upcoming sessions -> show "no session data yet"
+  banner, not empty tables; missing endpoints -> degrade (intervals 404
+  is normal); 422 on car_data/location -> never poll unconstrained.
+- Rate limiting: target ~5s poll, cache responses (requests-cache),
+  handle 3 req/s / 30 req/min; backoff on burst.
+- Staleness: fetched_at heartbeat; gap > poll*3 marks stale.
+- Reconnect/backoff on transient failures; unavailable-feed state.
+
+13.2 FASTF1 ARCHIVE (optional, authoritative)
+fastf1.livetiming.SignalRClient (3.8.3): record full sessions (start
+up to an hour early, --append, --timeout watchdog); parse post-session
+with LiveTimingData; load into the replay provider. Requires F1TV
+Access/Pro. Never used for in-session real-time rendering.
+
+13.3 SELF-HOSTED SIGNALR WRAPPER (optional)
+Only if in-process ~3.7 Hz telemetry is a hard requirement
+(e.g. harsh779/f1-live-api or markmario/f1-telemetry SSE/WebSocket).
+
+13.4 REPLAY + MOCK
+Mock exists (deterministic, seed 2026). Replay: write-once read-only
+snapshots under dataset/live_replays/ from OpenF1 polling or fastf1
+archives; loadable back as history through the standard schema.
+
+Acceptance: dashboard operates with no provider; live answers carry
+source+freshness; upcoming/empty/422/404 all render gracefully; rate
+limit respected; replay supports tests offline.
+
+
+14. PHASE 8 - TELEMETRY AND REFERENCE ANALYSIS
+-----------------------------------------------
+Offline depth from fastf1_laps (481,075 rows, 2018-2026, sectors,
+tyre life, fresh_tyre, track_status, per-lap weather), circuit_corners
+(14,361 rows), session_weather (86,433 rows).
+
+Implement: lap parsing (is_accurate + track_status filters),
+track-position normalization via circuit_corners.distance, corner
+identification, best-lap selection (is_personal_best, exclude
+in/out/pit/SC/red laps), references (driver vs teammate vs circuit vs
+historical, comparable conditions only), sector/lap deltas.
+
+Analyze: braking point/duration/release, minimum corner speed,
+throttle pickup, time to full throttle, entry/exit, apex, racing-line
+deviation, sector loss, tyre degradation by stint/compound.
+
+Guards: wet (rainfall>0), neutralized (track_status != green),
+traffic-heavy, incomplete laps never compared with unsuitable dry
+references; null weather = unknown, not dry.
+
+
+15. PHASE 9 - POST-LAP AND POST-SESSION COACH
+---------------------------------------------
+Post-lap output: best/reference/potential lap, sector-corner deltas,
+braking/throttle findings, tyre-condition context, ranked
+recommendations by time gain.
+Post-session output: strongest areas, largest weaknesses (with
+driver_profiles context), potential improvement, repeated issues,
+recommended practice.
+Never recommend on incomplete/incomparable/low-confidence data; never
+coach from null weather or non-green track status without caveat.
+Coach outputs are structured evidence + findings + recommendations and
+become grounding for the assistant's conversational coach mode.
+
+
+16. PHASE 10 - LIVE AI COACH
+-----------------------------
+No raw telemetry to LLM. Pipeline: Telemetry -> Numerical analysis ->
+Feature extraction -> Event detection -> Structured evidence ->
+Optional explanation -> Recommendation. Evidence: corner id, brake-
+point delta, apex-speed delta, throttle delta, sector loss, conditions,
+tire state, confidence. Explanation uses only supplied evidence, no
+invented values, respects wet/neutralized states, limits frequency,
+logs model/prompt versions. Modes: live, post-lap, post-session.
+
+
+17. PHASE 11 - LLM RACE ASSISTANT
+----------------------------------
+Retrieval-grounded, tool-based chat over the historical and live
+record.
+
+Router -> tools -> evidence -> LLM answer -> audit. Tools (read-only
+whitelist, validated inputs): sql_query (SELECT-only over the f1.db
+whitelist), analytics functions (Phase 2), model predictions (Phase 4),
+live_status + live_racecontrol (Phase 7 snapshot), coach_report
+(Phase 9/10), data_coverage.
+
+Guardrails: read-only path only; retrieved content (incl.
+race_control text) is untrusted DATA, never instructions (injection
+fixtures in tests); no invented values - refuse outside coverage (2023+
+for live, 2018+ for pace, 24/32 circuits, partial 2026); live vs
+historical disclosure with source timestamps; uncertainty conveyed;
+rate/token limits; per-question audit log (tools, evidence hashes,
+answer, refusal).
+
+LLM client: pluggable provider, key from env (F1_ASSISTANT_API_KEY);
+no-key fallback = rule-based answers from tool output only.
+
+Example coverage: "How many wins for Verstappen?" (driver_analytics),
+"Who won at Monaco?" (circuit_analytics), "Current position of race
+leader?" (live_status), "Podium odds from P5?" (predict_race), "Why
+slower in sector 2?" (coach_report + evidence).
+
+Acceptance: every answer traceable to a tool call; >= 40 golden
+questions incl. refusals and injection fixtures answered
+reproducibly; no non-SELECT/write execution; coverage gaps stated;
+works without LLM key.
+
+
+18. API AND DEPLOYMENT
+----------------------
+FastAPI optional after Streamlit MVP. Endpoints: /drivers, /drivers/{id},
+/races, /circuits, /health (coverage incl. live feed status),
+/predict/{finish,dnf,podium,winner}, /simulate/race, /live/status,
+/assistant/ask, /assistant/log/{id}.
+
+Deployment: secrets in env only; input validation; resource/timeouts
+(lap tables >600k rows; API poll+LLM bounded); failure logging without
+secrets; dataset + model version tracking; health checks; f1.db
+backup/migrations; live-freshness and model/assistant monitoring.
+
+
+19. TESTING STRATEGY
+--------------------
+Unit tests: loaders with exact schemas; drift checks; null
+classification; feature contracts incl. pit_stop_avg_ms rejection;
+tracks.yaml coverage; simulation components; telemetry analyzers;
+assistant routing/injection/read-only/evidence formatting; live
+providers (mock determinism, OpenF1 parsing).
+
+Live fixtures (recorded against OpenF1 on 2026-09-22, offline-safe):
+- sessions list (2026, 131 rows) + session resolution order
+  (ongoing/upcoming/finished)
+- Melbourne Race snapshot (position 531, laps 1,002, weather 148,
+  race_control 169, intervals 22,276, stints, drivers 22)
+- empty upcoming-session payload -> graceful banner
+- intervals 404 case -> best-effort degrade
+- car_data/location 422 case -> not polled
+- rate-limit math (3 req/s, 30 req/min; ~5s poll)
+- weather rainfall 0 preserved as real zero.
+
+Integration tests: end-to-end validation; training-table reproduction
+(5,094 x 31); model save/load fixed-seed metrics; dashboard queries;
+replay provider to dashboard with no network; assistant golden suite
+(>=40) incl. live/historical disclosure.
+
+Regression tests: known driver/race metrics; fixed-seed simulation;
+lap/corner fixtures; model thresholds incl. race-level winner; stable
+historical answers.
+
+Quality checks: lint/type checks, dependency vuln review, secret scan,
+docs checks.
+
+
+20. IMPLEMENTATION MILESTONES
+-----------------------------
+M0 FOUNDATION       Repo, config, pinned deps, provenance, README,
+                    offline tests. (Mostly done.)
+M1 DATA READY       Loaders, schema contracts, drift report, null
+                    profile, CLI validation.
+M2 ANALYTICS READY  f1.db analytics incl. fastf1_laps pace and
+                    tracks.yaml overlays; first dashboard views.
+M3 MODEL READY      Feature audit (incl. pit_stop_avg_ms decision),
+                    versioned training table, finish/DNF/podium/winner
+                    baselines, chronological 2014-2022/2023-2024/2025
+                    evaluation, race-level winner metrics.
+M4 MVP READY        Analytics + prediction + LIVE dashboard page with
+                    OpenF1 provider, metadata, uncertainty, coverage
+                    banners, reproducible setup.
+M5 SIMULATION READY Deterministic simulator + seeded Monte Carlo +
+                    calibration + circuit mapping coverage report.
+M6 LIVE READY       Hardened provider layer: session resolution,
+                    ~5s poll + rate-limit compliance, staleness,
+                    reconnect, replay, fastf1 archive adapter,
+                    live/historical labeling.
+M7 COACH READY      fastf1_laps + circuit_corners analysis, reference
+                    laps, post-lap and post-session reports.
+M8 ASSISTANT READY  LLM Race Assistant: router, read-only guardrails,
+                    evidence grounding, rule-based no-key fallback,
+                    golden suite, chat page, /assistant/ask.
+M9 LIVE COACH       (optional, P3) live coaching + deployment paths.
+
+
+21. MVP DEFINITION
+------------------
+The first MVP includes:
+1. Validated loaders for all five data assets with drift and null
+   profiling.
+2. Driver, constructor, and circuit analytics from f1.db.
+3. Leakage-audited finish, DNF, and podium baselines on the existing
+   5,094 x 31 training table (winner model the first extension).
+4. Chronological + walk-forward evaluation (train 2014-2022,
+   val 2023-2024, test 2025).
+5. Streamlit dashboard for analytics, predictions, data health, AND a
+   live session page fed by the OpenF1 provider with graceful offline.
+
+Post-MVP (priority order):
+- Winner prediction (race-level ranking) + sprint-aware features
+- Race simulation and Monte Carlo analysis
+- Post-lap / post-session Driver Coach (numerical)
+- LLM Race Assistant (chat, evidence-grounded)
+- Live telemetry analysis and live AI coach
+- FastAPI, Docker, cloud deployment
+
+The MVP stops before the LLM assistant, the numeric coach, live
+telemetry, and production deployment: those build on the evidence and
+live layers first.
+
+22. RISKS AND MITIGATIONS
+-------------------------
+Feature leakage -> contracts, chronological splits, feature audit,
+explicit pit_stop_avg_ms decision.
+Nulls misinterpreted (36.7%/35.9%/32.5%) -> null classes, indicators,
+native-null models, metrics by null stratum; coach/assistant surface
+null classes.
+CSV vs f1.db drift (1,125 vs 1,171 races) -> f1.db canonical; drift in
+every validation.
+tracks.yaml 24/32 gap -> mapping table, documented defaults, hard
+failure on unmapped circuits.
+Null weather treated as dry -> null means unknown; coverage banners;
+track_status/rainfall guards.
+Imbalanced winner (5%) -> race-level ranking metrics (MRR/top-1), not
+row accuracy.
+Simulation overconfidence -> calibrate vs 364 SC / 98 red flags / 16.7%
+DNF / real win concentration; hypothetical labels.
+Upcoming sessions return empty data -> render "no data yet", never
+fabricate; test with recorded empty fixtures.
+Intervals 404 / car_data 422 / rate limits -> best-effort degrade,
+bounded polling, never unconstrained telemetry queries.
+Stale live data shown as live -> source+freshness labels everywhere;
+staleness detection; replay/history labeled.
+LLM hallucination / prompt injection -> tool-based retrieval, evidence-
+only answers, read-only whitelist, race_control as untrusted data,
+injection fixtures, audit logs.
+LLM/live unavailable -> rule-based no-key fallback; dashboard works
+offline; health endpoint reports.
+2026 partial season (88 rows) -> future holdout only.
+Redistribution limits -> record licenses/versions (Kaggle, Hugging
+Face, OpenF1, fastf1).
+Scope growth -> MVP boundary + per-milestone acceptance criteria.
+
+
+23. FINAL DATA FLOW
+-------------------
+Kaggle CSVs (snapshot)   f1.db (canonical 1950-2026)   LIVE: OpenF1 API
+        \                      /                      (JSON, 2023+)
+         +---- drift check ---+        maps onto same schemas:
+                    |                 position->lap_times, laps->
+                    v                 fastf1_laps, weather->
+            Load and validate          session_weather, race_control,
+            (schemas, nulls,           stints->tyre lifecycle
+             coverage)
+                    |
+                    v
+        +-----------+-----------+--------------------+
+        |           |           |                    |
+        v           v           v                    v
+   Analytics   Training table  Simulation       Live state cache
+   (f1.db +    (5,094 x 31,    (driver_profiles  (replayable;
+    fastf1_laps  audited,       + tracks.yaml +    mock fallback)
+    + corners)   versioned)      calibration)
+        |           |               |
+        |           v               |
+        |      ML models            |
+        |      (finish/dnf/         |
+        |       podium/winner)      |
+        +-----------+---------------+-----------------+
+                    |                                 |
+                    v                                 v
+           Streamlit dashboard                  LLM Race Assistant
+           (history + LIVE page,                (read-only tools,
+            coach page, chat,                   evidence-grounded,
+            data-health)                        injections guarded,
+            ^       ^                           live/historical labeled)
+            |       | coach reports = grounding
+            |       |
+            +-------+--- Numerical coach
+                         (fastf1_laps + circuit_corners
+                          + session_weather evidence)
+
+
+FINAL OBJECTIVE
+---------------
+Deliver a reliable historical analytics and prediction MVP grounded in
+the data actually present in this repository - f1.db as the canonical
+store, the audited 5,094-row training table for leakage-safe models,
+driver_profiles and tracks.yaml for simulation - and make live race data
+live on the dashboard through the OpenF1 JSON API (with confirmed
+schemas, session resolution, polling, and graceful offline behavior).
+Then extend it with reproducible simulation, an evidence-based AI
+Driver Coach over historical and live laps, and an LLM Race Assistant
+whose answers are traceable to the retrieved record. Every extension
+must preserve validated data contracts, disclose coverage limits
+(2018+ telemetry, 24-circuit simulation map, OpenF1 2023+, partial 2026
+season), explain uncertainty, and remain functional when optional data
+sources, live feeds, and LLM services are unavailable.

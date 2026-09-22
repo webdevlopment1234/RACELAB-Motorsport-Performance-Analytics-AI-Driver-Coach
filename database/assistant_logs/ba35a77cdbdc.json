@@ -1,0 +1,14 @@
+{
+  "audit_id": "ba35a77cdbdc",
+  "ts": "2026-09-22T11:24:30.891252+00:00",
+  "question": "SELECT COUNT(*) as n FROM races",
+  "tools": [
+    "sql_query"
+  ],
+  "mode": "rule_based",
+  "evidence_hashes": {
+    "sql_query": "79149c4d33fc"
+  },
+  "answer": "[rule-based answer] Topic: sql\nQuery result (first 10 rows):\n- {'n': 1171}\nTools used: sql_query",
+  "no_answer": false
+}

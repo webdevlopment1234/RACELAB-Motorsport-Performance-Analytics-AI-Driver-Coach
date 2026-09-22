@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: f1-analytics
+Version: 0.1.0
+Summary: F1 historical analytics, live timing, AI driver coach, and LLM race assistant
+Requires-Python: >=3.10
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: requests>=2.28
+Requires-Dist: requests-cache>=1.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: scikit-learn>=1.4
+Requires-Dist: scipy>=1.10
+Requires-Dist: streamlit>=1.40
+Requires-Dist: plotly>=5.20
+Requires-Dist: joblib>=1.3
+Requires-Dist: python-dotenv>=1.0
+Provides-Extra: live
+Requires-Dist: fastf1>=3.8; extra == "live"
+Provides-Extra: assistant
+Requires-Dist: openai>=1.30; extra == "assistant"

@@ -1,0 +1,16 @@
+{
+  "audit_id": "97a7e3a0096c",
+  "ts": "2026-09-22T11:23:50.934500+00:00",
+  "question": "who is the race leader right now?",
+  "tools": [
+    "live_status",
+    "live_racecontrol"
+  ],
+  "mode": "rule_based",
+  "evidence_hashes": {
+    "live_status": "e9a73fa0e918",
+    "live_racecontrol": "4da70f1ea102"
+  },
+  "answer": "[rule-based answer] Topic: live status\nLive status: race in progress.\n  P1 ZHO\n  P2 OCO\n  P3 SAI\n  P4 HAD\n  P5 VER\n  P6 MUL\n  P7 TSU\n  P8 BEA\n  P9 NOR\n  P10 RUS\nData source mock, fetched 2026-09-22T11:23:50+00:00.\nTools used: live_status, live_racecontrol",
+  "no_answer": false
+}

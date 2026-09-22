@@ -1,0 +1,14 @@
+{
+  "audit_id": "1daac0907ead",
+  "ts": "2026-09-22T11:23:50.936530+00:00",
+  "question": "SELECT COUNT(*) as n FROM races WHERE year=2026",
+  "tools": [
+    "sql_query"
+  ],
+  "mode": "rule_based",
+  "evidence_hashes": {
+    "sql_query": "42e17bbea64b"
+  },
+  "answer": "[rule-based answer] Topic: sql\nQuery was not executed: only SELECT queries allowed (read-only whitelist)\nTools used: sql_query",
+  "no_answer": false
+}

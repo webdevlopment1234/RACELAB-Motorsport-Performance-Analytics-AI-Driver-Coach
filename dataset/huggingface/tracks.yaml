@@ -1,0 +1,256 @@
+# Track characteristic profiles for simulation engine
+# Values are normalized 0.0 - 1.0 unless otherwise noted
+
+tracks:
+  monaco:
+    name: "Monaco"
+    type: "street"
+    overtaking_difficulty: 0.95
+    pit_time_loss_seconds: 22
+    safety_car_probability: 0.65
+    tire_degradation_multiplier: 0.7
+    rain_probability: 0.15
+    qualifying_importance: 0.98
+    laps: 78
+
+  monza:
+    name: "Monza"
+    type: "high_speed"
+    overtaking_difficulty: 0.3
+    pit_time_loss_seconds: 25
+    safety_car_probability: 0.35
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.10
+    qualifying_importance: 0.6
+    laps: 53
+
+  silverstone:
+    name: "Silverstone"
+    type: "high_speed"
+    overtaking_difficulty: 0.45
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.40
+    tire_degradation_multiplier: 1.1
+    rain_probability: 0.35
+    qualifying_importance: 0.7
+    laps: 52
+
+  spa:
+    name: "Spa-Francorchamps"
+    type: "high_speed"
+    overtaking_difficulty: 0.35
+    pit_time_loss_seconds: 24
+    safety_car_probability: 0.45
+    tire_degradation_multiplier: 0.9
+    rain_probability: 0.40
+    qualifying_importance: 0.65
+    laps: 44
+
+  suzuka:
+    name: "Suzuka"
+    type: "technical"
+    overtaking_difficulty: 0.55
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.40
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.25
+    qualifying_importance: 0.75
+    laps: 53
+
+  singapore:
+    name: "Singapore"
+    type: "street"
+    overtaking_difficulty: 0.75
+    pit_time_loss_seconds: 30
+    safety_car_probability: 0.75
+    tire_degradation_multiplier: 0.8
+    rain_probability: 0.30
+    qualifying_importance: 0.85
+    laps: 62
+
+  interlagos:
+    name: "Interlagos"
+    type: "technical"
+    overtaking_difficulty: 0.40
+    pit_time_loss_seconds: 22
+    safety_car_probability: 0.50
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.35
+    qualifying_importance: 0.65
+    laps: 71
+
+  bahrain:
+    name: "Bahrain"
+    type: "technical"
+    overtaking_difficulty: 0.35
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.35
+    tire_degradation_multiplier: 1.2
+    rain_probability: 0.02
+    qualifying_importance: 0.65
+    laps: 57
+
+  jeddah:
+    name: "Jeddah"
+    type: "street"
+    overtaking_difficulty: 0.40
+    pit_time_loss_seconds: 24
+    safety_car_probability: 0.60
+    tire_degradation_multiplier: 0.9
+    rain_probability: 0.02
+    qualifying_importance: 0.75
+    laps: 50
+
+  melbourne:
+    name: "Melbourne"
+    type: "street"
+    overtaking_difficulty: 0.60
+    pit_time_loss_seconds: 24
+    safety_car_probability: 0.55
+    tire_degradation_multiplier: 0.9
+    rain_probability: 0.20
+    qualifying_importance: 0.75
+    laps: 58
+
+  imola:
+    name: "Imola"
+    type: "technical"
+    overtaking_difficulty: 0.65
+    pit_time_loss_seconds: 24
+    safety_car_probability: 0.40
+    tire_degradation_multiplier: 0.9
+    rain_probability: 0.20
+    qualifying_importance: 0.80
+    laps: 63
+
+  barcelona:
+    name: "Barcelona"
+    type: "technical"
+    overtaking_difficulty: 0.60
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.30
+    tire_degradation_multiplier: 1.2
+    rain_probability: 0.10
+    qualifying_importance: 0.75
+    laps: 66
+
+  montreal:
+    name: "Montreal"
+    type: "semi_street"
+    overtaking_difficulty: 0.40
+    pit_time_loss_seconds: 22
+    safety_car_probability: 0.60
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.25
+    qualifying_importance: 0.65
+    laps: 70
+
+  red_bull_ring:
+    name: "Red Bull Ring"
+    type: "high_speed"
+    overtaking_difficulty: 0.35
+    pit_time_loss_seconds: 21
+    safety_car_probability: 0.35
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.25
+    qualifying_importance: 0.65
+    laps: 71
+
+  hungaroring:
+    name: "Hungaroring"
+    type: "technical"
+    overtaking_difficulty: 0.80
+    pit_time_loss_seconds: 22
+    safety_car_probability: 0.30
+    tire_degradation_multiplier: 1.1
+    rain_probability: 0.20
+    qualifying_importance: 0.85
+    laps: 70
+
+  zandvoort:
+    name: "Zandvoort"
+    type: "technical"
+    overtaking_difficulty: 0.75
+    pit_time_loss_seconds: 22
+    safety_car_probability: 0.35
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.25
+    qualifying_importance: 0.85
+    laps: 72
+
+  cota:
+    name: "COTA"
+    type: "technical"
+    overtaking_difficulty: 0.40
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.40
+    tire_degradation_multiplier: 1.1
+    rain_probability: 0.20
+    qualifying_importance: 0.70
+    laps: 56
+
+  mexico:
+    name: "Mexico City"
+    type: "technical"
+    overtaking_difficulty: 0.40
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.40
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.15
+    qualifying_importance: 0.70
+    laps: 71
+
+  las_vegas:
+    name: "Las Vegas"
+    type: "street"
+    overtaking_difficulty: 0.35
+    pit_time_loss_seconds: 25
+    safety_car_probability: 0.50
+    tire_degradation_multiplier: 0.8
+    rain_probability: 0.05
+    qualifying_importance: 0.65
+    laps: 50
+
+  losail:
+    name: "Losail"
+    type: "high_speed"
+    overtaking_difficulty: 0.45
+    pit_time_loss_seconds: 24
+    safety_car_probability: 0.30
+    tire_degradation_multiplier: 1.1
+    rain_probability: 0.02
+    qualifying_importance: 0.70
+    laps: 57
+
+  yas_marina:
+    name: "Yas Marina"
+    type: "technical"
+    overtaking_difficulty: 0.45
+    pit_time_loss_seconds: 23
+    safety_car_probability: 0.35
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.02
+    qualifying_importance: 0.70
+    laps: 58
+
+  shanghai:
+    name: "Shanghai"
+    type: "technical"
+    overtaking_difficulty: 0.40
+    pit_time_loss_seconds: 24
+    safety_car_probability: 0.35
+    tire_degradation_multiplier: 1.0
+    rain_probability: 0.20
+    qualifying_importance: 0.70
+    laps: 56
+
+  baku:
+    name: "Baku"
+    type: "street"
+    overtaking_difficulty: 0.35
+    pit_time_loss_seconds: 25
+    safety_car_probability: 0.70
+    tire_degradation_multiplier: 0.8
+    rain_probability: 0.05
+    qualifying_importance: 0.65
+    laps: 51

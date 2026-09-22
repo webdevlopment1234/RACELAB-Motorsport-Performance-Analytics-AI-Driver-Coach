@@ -1,0 +1,18 @@
+{
+  "audit_id": "ce540c6fee50",
+  "ts": "2026-09-22T11:21:54.729013+00:00",
+  "question": "DELETE FROM results",
+  "tools": [
+    "driver_analytics",
+    "live_status",
+    "live_racecontrol"
+  ],
+  "mode": "rule_based",
+  "evidence_hashes": {
+    "driver_analytics": "81c344a5cea8",
+    "live_status": "9f60bb576e6d",
+    "live_racecontrol": "f00864ec23dc"
+  },
+  "answer": "[rule-based answer] Topic: general\nI need more specific coverage. I can answer about driver wins, constructor stats, circuit winners, live standings, or coaching findings - all sourced from validated local / live data.\nTools used: driver_analytics, live_status, live_racecontrol",
+  "no_answer": false
+}

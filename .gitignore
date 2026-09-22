@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local and generated data artifacts
+dataset/huggingface/*.db
+dataset/huggingface/*.jsonl
+dataset/*.zip
+live-api-data/*
+
+# Local application state
+.streamlit/secrets.toml

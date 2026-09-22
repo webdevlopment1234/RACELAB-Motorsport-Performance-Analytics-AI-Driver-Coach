@@ -1,0 +1,346 @@
+FASTF1 PROJECT DATASET OVERVIEW
+===============================
+Version: 2.0 (expanded with live-data extraction)
+
+Project purpose
+---------------
+This project combines Formula 1 historical data, processed machine
+learning datasets, circuit simulation parameters, a SQLite database,
+and a live race-data feed into one analytics platform. The data is
+organized as:
+
+    dataset/kaggledataset/     16 years of raw historical CSV snapshots
+    dataset/huggingface/       processed Parquet, f1.db, tracks.yaml
+    LIVE DATA (runtime)        OpenF1 API, extracted and rendered live
+                               on the dashboard
+
+The historical folders describe the origin of the stored files. The
+live feed is obtained at runtime from the OpenF1 API (api.openf1.org),
+a free, open, key-less community API; it is never written into the
+canonical dataset folder.
+
+
+1. KAGGLE DATASET (dataset/kaggledataset/)
+------------------------------------------
+Traditional relational Formula 1 data as 14 CSV files
+(measured row counts):
+
+    circuits.csv              77 x 9      circuits and locations
+    constructor_results.csv   12,625 x 5  constructor race points
+    constructor_standings.csv 13,391 x 7  constructor championship stands
+    constructors.csv          212 x 5    teams
+    driver_standings.csv      34,863 x 7  driver championship stands
+    drivers.csv               861 x 9    drivers
+    lap_times.csv             589,081 x 6 per-driver lap times
+    pit_stops.csv             11,371 x 7  pit stops
+    qualifying.csv            10,494 x 9  q1/q2/q3 times
+    races.csv                 1,125 x 18  races + session schedule cols
+    results.csv               26,759 x 18 finishing positions, grid,
+                                          points, status, fastest lap
+    seasons.csv               75 x 2    1950-2024
+    sprint_results.csv        360 x 16  sprint results
+    status.csv                139 x 2   finish/DNF/retirement statuses
+
+Coverage: 1950-2024 (1,125 races).
+
+Relationships:
+    races.raceId -> results/qualifying/lap_times/pit_stops/standings/
+                    sprint_results.raceId
+    drivers.driverId, constructors.constructorId,
+    circuits.circuitId, status.statusId -> results
+
+Use: historical analytics, feature engineering, exploratory analysis.
+This snapshot is STALE relative to f1.db (database has 46 more races
+and 476 more results rows).
+
+
+2. SQLITE DATABASE (dataset/huggingface/f1.db)
+----------------------------------------------
+Canonical relational store, 24 tables, 1950-2026 (1,171 races),
+measured row counts:
+
+    circuits 78        constructors 214       drivers 865
+    races 1,171        seasons 77             results 27,235
+    qualifying 11,058  lap_times 619,804      pit_stops 12,294
+    driver_standings 35,449  constructor_standings 13,675
+    constructor_results 12,909  sprint_results 524  status 140
+
+Database-only tables (not present in the CSVs):
+    fastf1_laps       481,075 rows, 2018-2026, session breakdown:
+                      FP1 81,015 / FP2 85,972 / FP3 50,890 /
+                      Qualifying 55,016 / Race 193,498 /
+                      Sprint 8,830 / Sprint Qualifying 4,378 /
+                      Sprint Shootout 1,476.
+                      Columns: raceId, driverId, session, lap, time_sec,
+                      s1, s2, s3, compound, tyre_life, stint, position,
+                      speed_trap, speed_fl, speed_i1, speed_i2,
+                      is_personal_best, is_accurate, pit_in_time,
+                      pit_out_time, air_temp, track_temp, humidity,
+                      pressure, rainfall, wind_speed, wind_dir,
+                      fresh_tyre, track_status.
+    session_weather   86,433 timestamped condition rows.
+    race_control      37,155 flag/message rows.
+    safety_cars       364 deployments (cause, lap, full_laps).
+    red_flags         98 incidents.
+    circuit_corners   14,361 corner geometry rows
+                      (raceId, session, corner_num, x, y, angle,
+                      distance).
+    results_shared_drives 91 rows (exclude from per-driver aggregates).
+    fatal_accidents_drivers 51, fatal_accidents_marshalls 5 (reference).
+
+Use: canonical source for repeated SQL analytics, joins, and queries.
+
+
+3. PROCESSED PARQUET (dataset/huggingface/)
+-------------------------------------------
+
+3.1 training_dataset.parquet - THE MODEL TABLE
+    5,094 rows x 31 columns, 2014-2026, 255 races, 63 drivers,
+    22 constructors, 32 circuits.
+
+    Identification: raceId, driverId, constructorId, year, round,
+                    circuitId.
+    Driver features: grid_position, grid_position_sq,
+        rolling_avg_finish_3, rolling_avg_finish_5, season_points_pct,
+        track_avg_finish, track_best_finish, track_starts,
+        dnf_rate_rolling_10, quali_delta_teammate.
+    Constructor features: constructor_avg_finish_5,
+        constructor_dnf_rate_10, constructor_season_points_pct,
+        constructor_avg_speed_trap.
+    Race/technical: practice_pace_pct, tyre_deg_rate, pit_stop_avg_ms,
+        air_temp, track_temp, rainfall, safety_car_prob.
+    Targets (labels, never inputs): finish (1-22), is_dnf, is_winner,
+        is_podium.
+
+    Base rates: is_dnf 16.7%, is_podium 15.0%, is_winner 5.0%.
+    Rows per year: 2014-2025 between 335 and 468; 2026 has only 88
+    rows (partial season -> future holdout, not evaluation data).
+
+    Missing-value profile (measured; never blind-fill):
+        practice_pace_pct          1,868 rows (36.7%)
+        tyre_deg_rate              1,831 rows (35.9%)
+        constructor_avg_speed_trap 1,662 rows (32.6%)
+        air_temp / track_temp / rainfall  1,658 rows each (32.5%)
+        track_avg_finish / track_best_finish 1,037 rows (20.4%)
+        safety_car_prob              261 rows (5.1%)
+        rolling_avg_finish_3/5, dnf_rate_rolling_10  42 rows (0.8%)
+        pit_stop_avg_ms               21 rows (0.4%)
+        constructor_avg_finish_5 / constructor_dnf_rate_10 19 (0.4%)
+    Missingness classes: NOT APPLICABLE (first visit to a circuit),
+    STRUCTURAL/UNAVAILABLE (features that only exist 2018+), COLD START
+    (rolling features on new drivers), TRUE ZERO (rainfall = 0 is real).
+
+3.2 driver_profiles.parquet - 379 drivers x 18 columns
+    Identity: driverId, driverRef, code, name, nationality, first_year,
+              last_year.
+    Counts:   total_races, total_wins, total_podiums.
+    Ratings (normalized 0-1): quali_dominance, race_pace, consistency,
+              wet_mastery, overtaking, teammate_dominance, peak_rating,
+              overall_rating.
+
+    Use: driver rankings, similarity, simulation pace priors, coach
+    context.
+
+
+4. tracks.yaml (dataset/huggingface/tracks.yaml)
+------------------------------------------------
+Simulation parameters for 24 modern circuits, keyed by circuitRef
+(bahrain, baku, barcelona, cota, hungaroring, imola, interlagos,
+jeddah, las_vegas, losail, melbourne, mexico, monaco, montreal, monza,
+red_bull_ring, shanghai, silverstone, singapore, spa, suzuka,
+yas_marina, zandvoort).
+
+Per track: name, type (street/high_speed/technical/semi_street),
+overtaking_difficulty, pit_time_loss_seconds, safety_car_probability,
+tire_degradation_multiplier, rain_probability, qualifying_importance,
+laps.
+
+Coverage gap: training table uses 32 circuitIds, tracks.yaml has 24
+circuitRef keys. Requires an explicit circuitId -> circuitRef map plus
+documented defaults for uncovered circuits (e.g., albert_park, miami,
+paul_ricard, portimao, imola variants).
+
+
+5. JSONL TOPIC FILES (dataset/huggingface/)
+-------------------------------------------
+topic_results.jsonl / (1) / (2): records with id, section, topics, and
+topic scores referring to CIA declassified documents - NOT Formula 1
+data. Excluded from the F1 pipeline.
+
+
+6. LIVE DATA - OPENF1 API (api.openf1.org)
+------------------------------------------
+Runtime feed for the "live available on dashboard" requirement. Free,
+open source, no API key, JSON (or CSV). Historical back to 2023,
+~3 second live delay, rate limits 3 req/s and 30 req/min (polling is
+tuned to ~4-5s and cached).
+
+6.1 ENDPOINTS AND CONFIRMED JSON SCHEMAS (probed 2026-09-22)
+
+    /v1/sessions
+        Fields: session_key, session_type (Practice/Qualifying/Race,
+                incl. Sprint and Sprint Qualifying variants),
+                session_name, date_start, date_end, meeting_key,
+                circuit_key, circuit_short_name, country_key,
+                country_code, country_name, location, gmt_offset,
+                year, is_cancelled.
+        2026 calendar exposed: 131 sessions. Example Race record:
+        session_key 11234, Melbourne 2026-03-08 04:00-06:00 UTC,
+        meeting_key 1279, circuit_key 10, country_code AUS.
+
+    /v1/drivers?session_key=X
+        Per driver: driver_number, broadcast_name, full_name,
+        name_acronym, team_name, team_colour (hex, no '#'), first_name,
+        last_name, headshot_url, country_code.
+        2026 grid: 22 drivers across 11 teams (McLaren, Red Bull
+        Racing, Ferrari, Mercedes, Audi, Cadillac, Alpine, Haas,
+        Williams, Aston Martin, Racing Bulls).
+
+    /v1/position?session_key=X
+        Per sample: date, session_key, meeting_key, driver_number,
+        position. Finished 2026 Melbourne Race: 531 rows.
+
+    /v1/laps?session_key=X
+        Per lap: meeting_key, session_key, driver_number, lap_number,
+        date_start, duration_sector_1/2/3, i1_speed, i2_speed,
+        is_pit_out_lap, lap_duration, segments_sector_1/2/3 (mini-
+        sector enum arrays), st_speed. Melbourne Race: 1,002 rows.
+
+    /v1/intervals?session_key=X
+        Per sample: date, session_key, meeting_key, driver_number,
+        gap_to_leader, interval. Melbourne Race: 22,276 rows.
+        NOTE: not all sessions expose intervals (a 2026 pre-season
+        practice returned 404) - treat as best-effort.
+
+    /v1/weather?session_key=X
+        Per sample: date, session_key, meeting_key, wind_direction,
+        pressure, rainfall, air_temperature, track_temperature,
+        humidity, wind_speed. Melbourne Race: 148 rows.
+
+    /v1/race_control?session_key=X
+        Per message: meeting_key, session_key, date, driver_number,
+        lap_number, category, flag, scope, sector, qualifying_phase,
+        message (free text). Melbourne Race: 169 messages.
+
+    /v1/stints?session_key=X
+        Per stint: meeting_key, session_key, stint_number,
+        driver_number, lap_start, lap_end, compound,
+        tyre_age_at_start. lap_end null = stint still running.
+
+    /v1/car_data, /v1/location
+        Telemetry (speed, rpm, gear, throttle, brake, drs) and car
+        position. MUST be narrowed (e.g., ?session_key=X&date<=T or a
+        driver filter); an unconstrained query returns HTTP 422
+        "too much data at once". Not polled on the dashboard by
+        default.
+
+6.2 BEHAVIORAL NOTES (observed)
+
+    - Sessions resolve chronologically: ongoing first, then next
+      upcoming, then most recent finished.
+    - FINISHED and LIVE sessions return data; an UPCOMING session
+      returns empty lists for position/laps/weather/etc. (it has not
+      happened yet). The dashboard must handle empty snapshots.
+    - Intervals 404 on some older/partial sessions - never required.
+    - session data starts at the 2023 season (history_from=2023);
+      earlier seasons come from f1.db, not the API.
+    - Session "live" state is defined by: date_start <= now < date_end.
+
+6.3 MAPPING TO LOCAL SCHEMAS (one shared shape for live + history)
+    position/intervals      -> lap_times positions, gaps
+    laps                    -> fastf1_laps (time_sec, s1/s2/s3,
+                               speed trap fields)
+    weather                 -> session_weather
+    race_control            -> race_control (category, flag, message)
+    stints                  -> pit_stops / tyre lifecycle
+    track_status/SC/red flag -> covered by race_control flags
+                               (plus safety_cars/red_flags tables
+                               historically)
+
+6.4 ALTERNATIVE LIVE SOURCE (optional)
+    fastf1.livetiming.SignalRClient (fastf1 3.8.3, already installed):
+    connects to F1's official SignalR feed. Requires an F1TV
+    Access/Pro account for full data and RECORDS to a file (parsed
+    post-session), so it is used for authoritative archives/replays,
+    not for in-session real-time rendering. OpenF1 is the default.
+
+6.5 EXAMPLE LIVE SNAPSHOT (mock/demo mode)
+    A deterministic MockProvider (20 drivers, fixed seed 2026)
+    generates the same snapshot contract offline for testing and
+    demos when no network or session exists.
+
+
+7. DATA-QUALITY CONSIDERATIONS
+------------------------------
+- Missing values in training_dataset.parquet must be handled by null
+  class (see 3.1), with missing indicators and train-only imputation.
+- Rolling, season, and track features must only use information
+  available before the predicted race (leakage controls).
+- Target columns (finish, is_dnf, is_winner, is_podium) must never be
+  inputs.
+- CSV vs f1.db drift exists (CSV stale at 2024) - f1.db is canonical,
+  drift is reported, sources are never silently mixed.
+- Live data has its own freshness label; "no live feed" degrades to
+  last-known state or error banner, never to fabricated data.
+
+
+8. RECOMMENDED ROLES FOR EACH FORMAT
+------------------------------------
+Kaggle CSVs:    portable snapshot for inspection and fallback (1950-2024).
+f1.db:          canonical queries, joins, analytics (1950-2026) +
+                telemetry-grade fastf1_laps/session_weather/corners.
+Parquet:        compact ML-ready columns for training and driver ratings.
+tracks.yaml:    simulation parameters and circuit overlays.
+OpenF1 API:     live timing + 2023+ history for the live dashboard page
+                and assistant "live now" answers.
+fastf1 archive: optional authoritative full-session recordings/replays
+                (F1TV account).
+topic *.jsonl:  not F1 data - excluded.
+
+
+9. OVERALL DATA FLOW
+--------------------
+    Historical CSV + f1.db + Parquet + tracks.yaml  (canonical store)
+                       |
+                       v
+              Load, validate, drift-check
+                       |
+        +--------------+---------------+
+        |              |               |
+        v              v               v
+   Analytics      ML training      Simulation
+        |              |               |
+        +--------------+---------------+
+                       |
+                       v
+             Streamlit dashboard
+        (history + LIVE OpenF1 feed)
+                       ^
+                       |
+            Live provider layer (OpenF1
+            -> replay/mock -> fastf1 archive)
+                       |
+                       v
+             Coach + LLM race assistant
+             (evidence grounded)
+
+History (1950-2026) lives in f1.db. Live resource state comes from
+OpenF1 during a session and is labeled with its source timestamp.
+Anything before 2023 or after the season's data window falls back to
+f1.db with a coverage notice.
+
+
+Summary
+-------
+The repository provides complete historical F1 data (14 CSV snapshots,
+a 24-table SQLite database, a 5,094-row model-ready training table,
+379 driver profiles, and 24-circuit simulation parameters) plus a live
+feed from the OpenF1 API whose JSON payloads map directly onto those
+schemas. Together they support historical analysis, live dashboards,
+race-result prediction, race simulation, driver coaching, and an
+evidence-grounded race assistant.
+
+
+cd /d "C:\Users\Syed Ahmed mohiuddin\OneDrive\Desktop\fastf1-python"
+.venv\Scripts\python.exe -m pip install -e .
+.venv\Scripts\python.exe -m streamlit run dashboard\app.py

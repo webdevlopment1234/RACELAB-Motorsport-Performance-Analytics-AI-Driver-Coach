@@ -1,0 +1,14 @@
+{
+  "audit_id": "4f1d4494e62e",
+  "ts": "2026-09-22T11:21:53.182371+00:00",
+  "question": "how many wins does Lewis Hamilton have?",
+  "tools": [
+    "driver_analytics"
+  ],
+  "mode": "rule_based",
+  "evidence_hashes": {
+    "driver_analytics": "81c344a5cea8"
+  },
+  "answer": "[rule-based answer] Topic: recent win leaders\nCareer win leaders (all-time):\n- Lewis Hamilton: 105 wins\n- Michael Schumacher: 91 wins\n- Max Verstappen: 71 wins\n- Sebastian Vettel: 53 wins\n- Alain Prost: 51 wins\n- Ayrton Senna: 41 wins\n- Fernando Alonso: 32 wins\n- Nigel Mansell: 31 wins\n- Jackie Stewart: 27 wins\n- Jim Clark: 25 wins\nTools used: driver_analytics",
+  "no_answer": false
+}
