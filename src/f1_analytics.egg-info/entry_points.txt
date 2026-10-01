@@ -1,0 +1,2 @@
+[console_scripts]
+f1-analytics = f1_analytics.cli:main

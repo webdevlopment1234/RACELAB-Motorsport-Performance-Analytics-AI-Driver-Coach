@@ -29,10 +29,11 @@ class LiveSnapshot:
     race_control: pd.DataFrame = field(default_factory=pd.DataFrame)
     stints: pd.DataFrame = field(default_factory=pd.DataFrame)
     intervals: pd.DataFrame = field(default_factory=pd.DataFrame)
+    telemetry: pd.DataFrame = field(default_factory=pd.DataFrame)
     warnings: list[str] = field(default_factory=list)
 
     DFRAME_FIELDS = ("drivers", "leaderboard", "latest_laps", "weather",
-                     "race_control", "stints", "intervals")
+                     "race_control", "stints", "intervals", "telemetry")
 
     def __post_init__(self) -> None:
         for name in self.DFRAME_FIELDS:

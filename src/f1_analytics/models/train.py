@@ -34,11 +34,25 @@ from ..preprocessing import FEATURE_COLUMNS, TARGETS
 # Inputs are the leak-free features at POST-QUALIFYING time. post_race
 # features (e.g. pit_stop_avg_ms) are excluded per the Phase 3 audit;
 # meta columns (year/round/circuitId) are not trainable features.
-DEFAULT_CONTRACT = "post_quali"
+DEFAULT_CONTRACT = config.MODEL_CONTRACT
 _META = {"year", "round", "circuitId"}
 PROD_INPUT_COLUMNS = [c for c in FEATURE_COLUMNS
                       if c not in leaking_features(DEFAULT_CONTRACT) and c not in _META]
-SEED = 42
+
+
+class ModelArtifactError(RuntimeError):
+    """Raised when a model artifact is missing, incompatible, or unreadable."""
+
+
+class FeatureSchemaError(ValueError):
+    """Raised when a scoring frame is missing expected feature columns."""
+
+
+SEED = config.MODEL_SEED
+
+
+def _train_command() -> str:
+    return "f1-analytics train"
 
 
 @dataclass
@@ -67,7 +81,88 @@ class Artifact:
     @classmethod
     def load(cls, task: str, directory: Path | None = None) -> "Artifact":
         file = (directory or config.MODELS_DIR) / f"{task}.joblib"
-        return joblib.load(file)
+        if not file.exists():
+            raise ModelArtifactError(
+                f"Model artifact missing for task {task!r}: {file}\n\n"
+                f"Train it with `{_train_command()}` (requires "
+                f"training_dataset.parquet), then retry."
+            )
+        try:
+            obj = joblib.load(file)
+        except Exception as exc:  # noqa: BLE001 - any pickle/environment issue
+            raise ModelArtifactError(
+                f"Model artifact for task {task!r} exists but could not be loaded: {file}\n"
+                f"Reason: {type(exc).__name__}: {exc}\n\n"
+                "This usually means the artifact was trained with a different "
+                "numpy/scikit-learn version (pickle is not portable across major "
+                "versions). Re-train it in this environment with "
+                f"`{_train_command()}` so version checks match."
+            ) from exc
+        if not isinstance(obj, cls):
+            raise ModelArtifactError(
+                f"{file} is not a model artifact (found {type(obj).__name__}). "
+                f"Re-train with `{_train_command()}`."
+            )
+        if obj.task != task:
+            raise ModelArtifactError(
+                f"{file} contains task {obj.task!r}, expected {task!r}. "
+                f"Re-train with `{_train_command()}`."
+            )
+        return obj
+
+    def validate(self, expected_columns: list[str] | None = None) -> tuple[bool, list[str]]:
+        """Check the artifact is internally consistent and matches the expected
+        production feature schema. Returns (ok, messages)."""
+        problems: list[str] = []
+        if self.task not in config.MODEL_TASKS:
+            problems.append(f"unknown task {self.task!r}")
+        if self.model is None:
+            problems.append("artifact has no fitted model")
+        if not self.input_columns:
+            problems.append("artifact has no input_columns recorded")
+        if expected_columns is not None:
+            expected = set(expected_columns)
+            actual = set(self.input_columns)
+            missing = sorted(expected - actual)
+            extra = sorted(actual - expected)
+            if missing:
+                problems.append(f"missing expected input columns: {missing}")
+            if extra:
+                problems.append(f"unexpected extra input columns: {extra}")
+        if not self.data_version:
+            problems.append("artifact has no data_version recorded")
+        if self.split != DEFAULT_CONTRACT:
+            problems.append(f"split contract {self.split!r} != {DEFAULT_CONTRACT!r}")
+        model = self.model
+        if model is not None and hasattr(model, "feature_names_in_"):
+            expected = list(self.input_columns) + list(self.indicator_cols)
+            fitted = list(model.feature_names_in_)
+            if fitted != expected:
+                problems.append(
+                    "fitted model feature set does not match artifact schema "
+                    f"(model has {len(fitted)} features, expected {len(expected)}; "
+                    "re-train with `f1-analytics train`)"
+                )
+        elif self.indicator_cols:
+            problems.append(
+                "artifact records missing indicators but the fitted model has no "
+                "feature_names_in_ metadata; re-train with `f1-analytics train`"
+            )
+        return (not problems), problems
+
+    @classmethod
+    def from_parts(cls, task: str, model: Any, input_columns: list[str],
+                   metrics: dict[str, float] | None = None,
+                   medians: dict[str, float] | None = None,
+                   indicator_cols: list[str] | None = None,
+                   **kwargs: Any) -> "Artifact":
+        """Construct an artifact from already-prepared components (used by tests
+        to build incompatible artifacts deliberately)."""
+        return cls(
+            task=task, model=model, metrics=metrics or {},
+            medians=medians or {}, indicator_cols=indicator_cols or [],
+            input_columns=input_columns, **kwargs,
+        )
 
     def to_json(self) -> str:
         return json.dumps({
@@ -96,15 +191,27 @@ def _fit_imputation(df: pd.DataFrame, inputs: list[str]) -> tuple[dict[str, floa
     return medians, indicator_cols
 
 
-def _prep(df: pd.DataFrame, inputs: list[str], medians: dict[str, float]) -> pd.DataFrame:
-    """Strategy S1: apply train-fitted medians + missing indicators."""
+def _prep(
+    df: pd.DataFrame,
+    inputs: list[str],
+    medians: dict[str, float],
+    indicator_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Strategy S1: train-fitted medians + missing indicators (same layout as inference)."""
     X = df[inputs].copy()
+    missing = X.isna()
     for col in inputs:
-        med = medians.get(col, df[col].dropna().median())
-        X[col] = df[col].fillna(med)
-    for col, is_missing in X.isna().items():
-        if is_missing.any():
-            X[f"{col}_missing"] = is_missing.astype(int)
+        med = medians.get(col)
+        if med is None:
+            med = X[col].dropna().median()
+            med = float(med) if not pd.isna(med) else 0.0
+        X[col] = X[col].fillna(med)
+    for col in indicator_cols or []:
+        if not col.endswith("_missing"):
+            continue
+        base = col[: -len("_missing")]
+        if base in missing.columns:
+            X[col] = missing[base].astype(int)
     return X
 
 
@@ -153,8 +260,8 @@ def train_for_target(task: str, train: pd.DataFrame, test: pd.DataFrame,
                      inputs: list[str] | None = None) -> Artifact:
     inputs = inputs or PROD_INPUT_COLUMNS
     medians, indicator_cols = _fit_imputation(train, inputs)
-    X_tr = _prep(train, inputs, medians)
-    X_te = _prep(test, inputs, medians)
+    X_tr = _prep(train, inputs, medians, indicator_cols)
+    X_te = _prep(test, inputs, medians, indicator_cols)
 
     if task == "finish":
         y_tr = train["finish"].astype(int)
@@ -198,7 +305,7 @@ def train_for_target(task: str, train: pd.DataFrame, test: pd.DataFrame,
     return artifact
 
 
-def train_all_years() -> list[Artifact]:
+def train_all_years(output_dir: Path | None = None, save: bool = True) -> list[Artifact]:
     df = training_table()
     train, val, test, holdout = split_years(
         df, config.TRAIN_MAX_YEAR, config.VAL_YEARS, config.TEST_YEARS
@@ -209,18 +316,160 @@ def train_all_years() -> list[Artifact]:
         artifact.train_years = (config.TRAIN_MAX_YEAR, max(config.VAL_YEARS + config.TEST_YEARS))
         artifact.val_years = config.VAL_YEARS
         artifact.test_years = config.TEST_YEARS
-        artifact.save()
+        if save:
+            artifact.save(output_dir)
+            _write_manifest(artifact, output_dir or config.MODELS_DIR)
         artifacts.append(artifact)
     return artifacts
 
 
-def predictor(task: str) -> Artifact:
-    return Artifact.load(task)
+def _write_manifest(artifact: Artifact, directory: Path) -> None:
+    """Write models/.manifest.json with the exact schema the artifact expects,
+    so a future reader can reject incompatible artifacts early."""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        manifest_path = directory / "manifest.json"
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest[str(artifact.task)] = {
+            "task": artifact.task,
+            "input_columns": sorted(artifact.input_columns),
+            "data_version": artifact.data_version,
+            "split": artifact.split,
+            "seed": artifact.seed,
+            "train_years": list(artifact.train_years) if artifact.train_years else None,
+            "val_years": list(artifact.val_years) if artifact.val_years else None,
+            "test_years": list(artifact.test_years) if artifact.test_years else None,
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - manifest is best-effort metadata
+        pass
+
+
+def ensure_models(directory: Path | None = None) -> list[Artifact]:
+    """Train all model artifacts if any expected artifact is missing, and
+    validate the result. Raises if the training table itself is unavailable."""
+    expected = [f"{t}.joblib" for t in TARGETS]
+    target_dir = directory or config.MODELS_DIR
+    missing = [f for f in expected if not (target_dir / f).exists()]
+    if not missing:
+        return [predictor(t, target_dir) for t in TARGETS]
+    return train_all_years(output_dir=target_dir, save=True)
+
+
+def predictor(task: str, directory: Path | None = None) -> Artifact:
+    return Artifact.load(task, directory)
+
+
+def models_status(directory: Path | None = None) -> dict[str, Any]:
+    """Non-raising readiness report for every model task.
+
+    Returns {"ok": bool, "models": {task: {...status...}}}. Never raises on
+    missing/incompatible artifacts.
+    """
+    target_dir = directory or config.MODELS_DIR
+    out: dict[str, Any] = {"ok": True, "models": {}}
+    for task in config.MODEL_TASKS:
+        file = target_dir / f"{task}.joblib"
+        if not file.exists():
+            out["models"][task] = {
+                "ok": False,
+                "path": str(file),
+                "reason": "missing",
+                "error": f"no artifact at {file}",
+            }
+            out["ok"] = False
+            continue
+        try:
+            artifact = Artifact.load(task, target_dir)
+            valid, problems = artifact.validate(PROD_INPUT_COLUMNS)
+            out["models"][task] = {
+                "ok": valid,
+                "path": str(file),
+                "reason": "ok" if valid else "invalid",
+                "error": "; ".join(problems) if problems else "",
+                "input_columns": artifact.input_columns,
+                "data_version": artifact.data_version,
+                "split": artifact.split,
+                "seed": artifact.seed,
+            }
+            if not valid:
+                out["ok"] = False
+        except ModelArtifactError as exc:
+            out["models"][task] = {
+                "ok": False,
+                "path": str(file),
+                "reason": "unreadable",
+                "error": str(exc),
+            }
+            out["ok"] = False
+    return out
+
+
+def _prep_predict(df: pd.DataFrame, artifact: "Artifact") -> pd.DataFrame:
+    """Apply the exact training-time imputation schema (Strategy S1).
+
+    Indicator columns are always rebuilt from artifact.indicator_cols so the
+    inference frame has the identical feature set the model was trained on,
+    regardless of which columns happen to be missing in this frame.
+    """
+    inputs = artifact.input_columns
+    X = df[inputs].copy()
+    missing = X.isna()
+    for col in inputs:
+        med = artifact.medians.get(col)
+        if med is not None:
+            X[col] = X[col].fillna(med)
+        else:
+            X[col] = X[col].fillna(X[col].dropna().median())
+    for col in artifact.indicator_cols:
+        if not col.endswith("_missing"):
+            continue
+        base = col[: -len("_missing")]
+        if base in X.columns:
+            X[col] = missing[base].astype(int)
+    return X
 
 
 def predict_df(artifact: Artifact, df: pd.DataFrame) -> pd.DataFrame:
-    """Predict on a DataFrame that has the artifact's input columns."""
-    X = _prep(df, artifact.input_columns, artifact.medians)
+    """Predict on a DataFrame that has the artifact's input columns.
+
+    Raises FeatureSchemaError with an actionable message if required feature
+    columns are missing or are not numeric.
+    """
+    if artifact.model is None:
+        raise ModelArtifactError(
+            f"Artifact for task {artifact.task!r} has no fitted model. "
+            f"Re-train with `{_train_command()}`."
+        )
+    if df is None or df.empty:
+        raise FeatureSchemaError(
+            "Nothing to predict: the scoring frame is empty.\n\n"
+            "The Predictions page builds a scoring row from the training table; "
+            "if you are calling predict_df() directly, pass a DataFrame with the "
+            "expected feature columns."
+        )
+    expected = set(artifact.input_columns)
+    missing = sorted(expected - set(df.columns))
+    if missing:
+        raise FeatureSchemaError(
+            f"Scoring frame is missing {len(missing)} of {len(expected)} required "
+            f"input columns: {missing}. Details:\n"
+            f"  expected schema (task {artifact.task!r}, data_version "
+            f"{artifact.data_version!r}): {sorted(expected)}\n"
+            f"  provided columns: {sorted(df.columns)}\n\n"
+            "Update the scoring input to match the artifact's feature contract "
+            f"(see `{_train_command()}` and models/models-status)."
+        )
+    for col in artifact.input_columns:
+        if not pd.api.types.is_numeric_dtype(df[col].dtype):
+            raise FeatureSchemaError(
+                f"Feature column {col!r} must be numeric for prediction, but it is "
+                f"{df[col].dtype} (task {artifact.task!r}). Convert the column to a "
+                "numeric type (missing values are fine - they are imputed) and retry."
+            )
+    X = _prep_predict(df, artifact)
     if artifact.task == "finish":
         out = np.clip(np.round(artifact.model.predict(X)), 1, 30).astype(int)
         return pd.DataFrame({"finish_pred": out})

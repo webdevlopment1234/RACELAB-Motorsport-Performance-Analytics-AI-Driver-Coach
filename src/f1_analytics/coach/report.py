@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from ..database import lap_pace
+from ..database import lap_pace, lap_pace_race
 
 
 @dataclass
@@ -111,3 +111,69 @@ def live_coach_from_snapshot(snapshot) -> CoachReport:
                           conditions=f"source={snapshot.source} fresh {snapshot.fetched_at}")],
         warnings=["live coach only ranks current order; lap-level needs telemetry"],
     )
+
+
+def coach_race(race_id: int, driver_id: int) -> CoachReport:
+    """Post-session coach for a single race (Phase 9, race-scoped).
+
+    Compares the driver's clean green-track laps against the race field:
+    overall pace gap, sector consistency, and the tyre context of the best
+    lap. Corner-level loss ("0.2s at Turn 4") needs continuous car data +
+    circuit_corners, which is reported as an explicit caveat when absent.
+    """
+    laps = lap_pace_race(race_id)
+    if laps.empty:
+        return CoachReport(driver=str(driver_id), n_laps=0,
+                           warnings=["no fastf1_laps for this race (f1.db required)"])
+    green = laps[laps["track_status"].astype(str) == "1"].copy()
+    if green.empty:
+        return CoachReport(driver=str(driver_id), n_laps=int(laps.shape[0]),
+                           warnings=["no clean green-track laps in this race"])
+    mine = green[green["driverId"] == driver_id]
+    if mine.empty:
+        name = laps[laps["driverId"] == driver_id]["driver"].iloc[0] if (
+            laps["driverId"] == driver_id).any() else str(driver_id)
+        return CoachReport(driver=name, n_laps=int(laps.shape[0]),
+                           warnings=["driver has no clean laps in this race"])
+    name = mine["driver"].iloc[0]
+    report = CoachReport(driver=name, n_laps=int(mine.shape[0]))
+    best_lap = mine["time_sec"].min()
+    field_best = green["time_sec"].min()
+    pace_gap = float(best_lap - field_best)
+    report.findings.append(Finding(
+        area="Race pace",
+        text=f"Best lap {best_lap:.3f}s vs race field best {field_best:.3f}s "
+             f"(gap {pace_gap:+.3f}s)",
+        confidence=0.9 if len(mine) >= 8 else 0.6,
+        conditions=f"{len(mine)} clean laps, green only",
+    ))
+    if len(mine) >= 6:
+        for sector in ("s1", "s2", "s3"):
+            if sector not in mine.columns or mine[sector].nunique() < 2:
+                continue
+            worst = mine.sort_values(sector, ascending=False).iloc[0]
+            best = mine.sort_values(sector, ascending=True).iloc[0]
+            delta = float(worst[sector] - best[sector])
+            if delta < 0.02:
+                continue
+            report.findings.append(Finding(
+                area=f"Sector {sector[-1]} consistency",
+                text=f"Most inconsistent in sector {sector[-1]}: lap {int(worst['lap'])} "
+                     f"{worst[sector]:.3f}s vs best {best[sector]:.3f}s "
+                     f"(delta {delta:+.3f}s)",
+                confidence=0.75,
+                conditions=f"n={len(mine)} clean laps",
+            ))
+    best_row = mine.loc[mine["time_sec"].idxmin()]
+    if "compound" in best_row and "tyre_life" in best_row:
+        report.findings.append(Finding(
+            area="Best-lap tyre context",
+            text=(f"Fastest lap set on {best_row['compound']} at {int(best_row['tyre_life'])} "
+                  f"laps old (stint {int(best_row['stint'])})"),
+            confidence=0.85,
+            conditions="from fastf1_laps",
+        ))
+    report.warnings.append(
+        "Corner-level loss ('0.2s at Turn 4') requires continuous car data "
+        "with circuit_corners - not available for this race yet.")
+    return report

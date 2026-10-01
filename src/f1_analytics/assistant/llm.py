@@ -11,16 +11,48 @@ from .. import config
 REDACTED = "***"
 
 
+def _openai_client_available() -> bool:
+    """True if the openai package can be imported (no import side effects)."""
+    if "openai" not in _openai_client_available.__dict__:
+        try:
+            import openai  # noqa: F401
+        except Exception:  # noqa: BLE001
+            _openai_client_available.__dict__["openai"] = False
+        else:
+            _openai_client_available.__dict__["openai"] = True
+    return _openai_client_available.__dict__["openai"]
+
+
 @dataclass
 class LLMClient:
     provider: str = "openai"
     model: str = config.ASSISTANT_MODEL
     key: str | None = field(default_factory=lambda: os.getenv(config.ASSISTANT_API_KEY_ENV))
     base_url: str | None = field(default_factory=lambda: os.getenv(config.ASSISTANT_BASE_URL_ENV))
+    timeout: float = config.ASSISTANT_TIMEOUT
+    max_retries: int = config.ASSISTANT_MAX_RETRIES
 
     @property
     def available(self) -> bool:
-        return bool(self.key)
+        """Usable only when a key is configured AND the provider package exists."""
+        if not self.key:
+            return False
+        if self.provider == "openai":
+            return _openai_client_available()
+        return False
+
+    def _completion(self, client: Any, system: str, user: str, timeout: float) -> str | None:
+        resp = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+            max_tokens=600,
+            timeout=timeout,
+        )
+        return resp.choices[0].message.content
 
     def complete(self, system: str, user: str) -> str | None:
         """Return the model answer, or None if no key / provider unavailable."""
@@ -29,17 +61,22 @@ class LLMClient:
         try:
             if self.provider == "openai":
                 from openai import OpenAI
+
                 client = OpenAI(api_key=self.key, base_url=self.base_url)
-                resp = client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=0.2,
-                    max_tokens=600,
-                )
-                return resp.choices[0].message.content
+                last_exc: Exception | None = None
+                for attempt in range(self.max_retries):
+                    try:
+                        out = self._completion(client, system, user, self.timeout)
+                        if out:
+                            return out
+                        last_exc = RuntimeError("empty completion")
+                    except Exception as exc:  # noqa: BLE001 - any network/API error
+                        last_exc = exc
+                        if attempt == self.max_retries - 1:
+                            break
+                # Never reveal a key or traceback in the answer.
+                return f"[provider unavailable: {type(last_exc).__name__}]"
+            return "[provider unavailable: unknown provider]"
         except Exception as exc:  # noqa: BLE001
             # never leak the key or traceback into a user answer
             return f"[provider unavailable: {type(exc).__name__}]"

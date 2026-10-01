@@ -1,9 +1,13 @@
+README.md
 pyproject.toml
 src/f1_analytics/__init__.py
+src/f1_analytics/cli.py
 src/f1_analytics/config.py
+src/f1_analytics/logging_utils.py
 src/f1_analytics.egg-info/PKG-INFO
 src/f1_analytics.egg-info/SOURCES.txt
 src/f1_analytics.egg-info/dependency_links.txt
+src/f1_analytics.egg-info/entry_points.txt
 src/f1_analytics.egg-info/requires.txt
 src/f1_analytics.egg-info/top_level.txt
 src/f1_analytics/analytics/__init__.py
@@ -18,6 +22,7 @@ src/f1_analytics/coach/__init__.py
 src/f1_analytics/coach/report.py
 src/f1_analytics/data/__init__.py
 src/f1_analytics/data/loaders.py
+src/f1_analytics/data/readiness.py
 src/f1_analytics/database/__init__.py
 src/f1_analytics/database/queries.py
 src/f1_analytics/features/__init__.py

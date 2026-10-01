@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Offline smoke tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package (core deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Compile all package sources
+        run: python -m compileall -q src
+
+      - name: Run offline smoke tests (data-independent)
+        env:
+          PYTHONHASHSEED: "0"
+        run: python tests/run_tests.py

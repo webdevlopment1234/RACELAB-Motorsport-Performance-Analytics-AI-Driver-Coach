@@ -1,9 +1,11 @@
 from .queries import (
     circuit_list,
     constructor_list,
+    data_source,
     driver_list,
     driver_sessions,
     lap_pace,
+    lap_pace_race,
     query,
     race_calendar,
     race_results,
@@ -12,7 +14,7 @@ from .queries import (
 )
 
 __all__ = [
-    "circuit_list", "constructor_list", "driver_list", "driver_sessions",
-    "lap_pace", "query", "race_calendar", "race_results", "speed_traps",
-    "standings_driver",
+    "circuit_list", "constructor_list", "data_source", "driver_list",
+    "driver_sessions", "lap_pace", "lap_pace_race", "query", "race_calendar",
+    "race_results", "speed_traps", "standings_driver",
 ]

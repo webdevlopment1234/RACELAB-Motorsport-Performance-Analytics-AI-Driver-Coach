@@ -81,6 +81,48 @@ class MockProvider(LiveProvider):
              "interval": rng.uniform(0.1, 8.0)}
             for i in order
         ])
+        self._telemetry = self._synthetic_telemetry(rng, order)
+
+    @staticmethod
+    def _synthetic_telemetry(rng, order) -> pd.DataFrame:
+        """One approximate lap of speed/throttle/brake/gear/delta per driver.
+
+        Deterministic shape (seeded); clearly synthetic - the mock provider
+        labels every snapshot as such.
+        """
+        n = 144
+        dist = np.linspace(0.0, 1.0, n)
+        # 8 braking zones per lap: speed dips where the corner wave peaks.
+        corner = np.sin(np.linspace(0.0, 16.0 * np.pi, n))
+        wave = (corner + 1.0) / 2.0
+        rows = []
+        for i in order:
+            number = DRIVERS_2026[i][0]
+            base = 300.0
+            dip = 62.0 + 18.0 * rng.uniform(0, 1)
+            speed = base - dip * wave + rng.normal(0, 1.5, n)
+            speed = np.clip(speed, 140.0, 330.0)
+            vdiff = np.gradient(speed)
+            brake = np.where(vdiff < -6.0, 100.0, 0.0)
+            accelerate = np.where((vdiff > 1.0) & (brake == 0.0), 100.0, 55.0)
+            throttle = np.where(brake > 0.0, np.clip(20.0 + vdiff, 0.0, 100.0), accelerate)
+            gear = np.clip(np.round(speed / 38.0) + 1, 1.0, 8.0)
+            # Delta vs an ideal reference lap: build a shaped cumulative offset.
+            ideal = base - 52.0 * wave
+            integrated = np.cumsum((speed - ideal) / ideal) * np.mean(ideal) / n
+            delta = integrated - integrated.min()
+            for k in range(n):
+                rows.append({
+                    "driver_number": number,
+                    "name_acronym": DRIVERS_2026[i][1],
+                    "distance_m": float(dist[k]),
+                    "speed_kmh": round(float(speed[k]), 1),
+                    "throttle_pct": round(float(throttle[k]), 1),
+                    "brake_pct": round(float(brake[k]), 1),
+                    "gear": int(gear[k]),
+                    "delta_s": round(float(delta[k]), 3),
+                })
+        return pd.DataFrame(rows)
 
     def refresh(self) -> LiveSnapshot:
         return LiveSnapshot(
@@ -97,6 +139,7 @@ class MockProvider(LiveProvider):
             race_control=self._race_control,
             stints=self._stints,
             intervals=self._intervals,
+            telemetry=self._telemetry,
             warnings=["mock provider - synthetic data, not real timing"],
         )
 

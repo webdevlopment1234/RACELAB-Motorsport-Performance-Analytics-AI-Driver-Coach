@@ -106,9 +106,20 @@ class OpenF1Provider(LiveProvider):
                  client: OpenF1Client | None = None) -> None:
         super().__init__()
         self.client = client or OpenF1Client()
-        self.session_key = session_key or self._default_session(year, session_key)
+        self.session_key = session_key
         self.year = year
         self._session_meta: dict[str, Any] = {}
+        self._init_warnings: list[str] = []
+        if session_key is None:
+            try:
+                self.session_key = self._default_session(year, session_key)
+            except requests.RequestException:
+                # Offline / API down at startup: never crash the app. The
+                # provider returns an empty, clearly-labeled snapshot instead.
+                self.session_key = None
+                self._init_warnings.append(
+                    "OpenF1 API unreachable at startup - live feed unavailable"
+                )
 
     def _default_session(self, year: int | None, session_key: int | None) -> int | None:
         meta = _resolve_session(self.client, year, session_key)
@@ -129,7 +140,9 @@ class OpenF1Provider(LiveProvider):
     def refresh(self) -> LiveSnapshot:
         if not self.session_key:
             return LiveSnapshot(source=self.name, fetched_at=self._now(),
-                                is_empty=True, warnings=["no active/upcoming session"])
+                                is_empty=True,
+                                warnings=self._init_warnings or
+                                ["no active/upcoming session"])
         session = self.client._get("sessions", {"session_key": self.session_key})
         meta = session[0] if session else self._session_meta
         empty = not meta.get("date_start") or self._is_upcoming(meta)
@@ -146,7 +159,7 @@ class OpenF1Provider(LiveProvider):
             race_control=self._race_control(),
             stints=self._stints(),
             intervals=self._intervals(),
-            warnings=self._warnings(meta),
+            warnings=self._warnings(meta) + self._init_warnings,
         )
 
     def _is_upcoming(self, session: dict[str, Any]) -> bool:

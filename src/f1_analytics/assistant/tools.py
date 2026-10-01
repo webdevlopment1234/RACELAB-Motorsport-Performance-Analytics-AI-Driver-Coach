@@ -15,7 +15,7 @@ from ..analytics import (
     constructor_summary_table,
     driver_summary_table,
 )
-from ..data import connect_sqlite
+from ..data import DataNotFoundError, open_f1_db
 
 # SELECT-only execution is enforced twice: parser + a second value-level check.
 _READ_ONLY_RE = r"^\s*(SELECT|WITH|EXPLAIN)\b"
@@ -70,10 +70,12 @@ def tool_sql_query(query: str, safety_live: Any | None = None) -> dict[str, Any]
         if bad in lower:
             return _result_payload(False, f"blocked keyword: {bad}")
     try:
-        con = connect_sqlite()
+        con = open_f1_db(purpose="the race assistant SQL tool")
         df = pd.read_sql(query, con, params={})
         con.close()
         return _result_payload(True, df.head(50).to_dict(orient="records"))
+    except DataNotFoundError as exc:
+        return _result_payload(False, str(exc))
     except (sqlite3.Error, pd.errors.DatabaseError) as exc:
         return _result_payload(False, f"sql error: {exc}")
     except Exception as exc:  # noqa: BLE001

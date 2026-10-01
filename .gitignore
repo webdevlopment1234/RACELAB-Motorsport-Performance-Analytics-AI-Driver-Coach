@@ -14,3 +14,10 @@ live-api-data/*
 
 # Local application state
 .streamlit/secrets.toml
+
+# Trained model artifacts (outputs of `f1-analytics train`)
+models/*.joblib
+models/*.json
+
+# Assistant chat logs
+database/assistant_logs/

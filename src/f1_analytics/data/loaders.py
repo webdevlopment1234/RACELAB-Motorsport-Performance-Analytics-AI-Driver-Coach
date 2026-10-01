@@ -29,8 +29,20 @@ CSV_FILES = {
 }
 
 
+_FIX_HINT = (
+    " Run `f1-analytics data-status` (or `python -m f1_analytics.cli data-status`) "
+    "to see what is missing and how to obtain each file."
+)
+
+
 class DataNotFoundError(FileNotFoundError):
     pass
+
+
+def _missing_message(purpose: str, path: Path) -> DataNotFoundError:
+    return DataNotFoundError(
+        f"{purpose} not found at: {path}.{_FIX_HINT}"
+    )
 
 
 def load_csv(name: str, dirpath: Path | None = None) -> pd.DataFrame:
@@ -39,7 +51,7 @@ def load_csv(name: str, dirpath: Path | None = None) -> pd.DataFrame:
         raise ValueError(f"Unknown CSV dataset {name!r}")
     path = (dirpath or config.KAGGLE_DIR) / CSV_FILES[name]
     if not path.exists():
-        raise DataNotFoundError(f"Missing data file: {path}")
+        raise _missing_message(f"CSV dataset {name!r}", path)
     return pd.read_csv(path, low_memory=False)
 
 
@@ -52,7 +64,7 @@ def load_parquet(name: str, dirpath: Path | None = None) -> pd.DataFrame:
     """Load a parquet file by canonical name (training_dataset, driver_profiles)."""
     path = (dirpath or config.HUGGINGFACE_DIR) / name
     if not path.exists():
-        raise DataNotFoundError(f"Missing data file: {path}")
+        raise _missing_message(f"Parquet file {name!r}", path)
     return pd.read_parquet(path)
 
 
@@ -67,7 +79,7 @@ def load_driver_profiles(dirpath: Path | None = None) -> pd.DataFrame:
 def connect_sqlite(path: Path | None = None) -> sqlite3.Connection:
     path = path or config.F1_DB_PATH
     if not path.exists():
-        raise DataNotFoundError(f"Missing database: {path}")
+        raise _missing_message("SQLite database (f1.db)", path)
     con = sqlite3.connect(str(path))
     con.row_factory = sqlite3.Row
     return con
@@ -95,7 +107,7 @@ def load_table(con: sqlite3.Connection, table: str) -> pd.DataFrame:
 def load_tracks(dirpath: Path | None = None) -> dict[str, dict[str, Any]]:
     path = (dirpath or config.HUGGINGFACE_DIR) / "tracks.yaml"
     if not path.exists():
-        raise DataNotFoundError(f"Missing data file: {path}")
+        raise _missing_message("tracks.yaml", path)
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not isinstance(data, dict) or "tracks" not in data:
