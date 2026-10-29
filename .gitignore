@@ -24,12 +24,6 @@ models/*.json
 # Assistant chat logs
 database/assistant_logs/
 
-# WebGL / Next.js front end
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-frontend/*.tsbuildinfo
-
 # Debug screenshots and generated replay data
 ERRORS/
 dataset/live_replays/
