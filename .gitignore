@@ -13,6 +13,8 @@ dataset/*.zip
 live-api-data/*
 
 # Local application state
+.env
+OpenrouterAPI.txt
 .streamlit/secrets.toml
 
 # Trained model artifacts (outputs of `f1-analytics train`)
@@ -21,3 +23,7 @@ models/*.json
 
 # Assistant chat logs
 database/assistant_logs/
+
+# Debug screenshots and generated replay data
+ERRORS/
+dataset/live_replays/

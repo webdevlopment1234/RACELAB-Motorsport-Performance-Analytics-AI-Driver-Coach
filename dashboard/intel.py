@@ -33,9 +33,16 @@ from f1_analytics import config  # noqa: E402
 from f1_analytics.assistant import LLMClient, ask  # noqa: E402
 from f1_analytics.coach import coach_race, live_coach_from_snapshot  # noqa: E402
 from f1_analytics.data import DataNotFoundError, db_available  # noqa: E402
-from f1_analytics.database import query, race_results  # noqa: E402
+from f1_analytics.database import (  # noqa: E402
+    drivers_with_laps,
+    query,
+    race_ids_with_laps,
+    race_results,
+)
 from f1_analytics.live import create_provider  # noqa: E402
 from f1_analytics.logging_utils import log_error  # noqa: E402
+
+from live_ui import replay_snapshot_picker  # noqa: E402
 
 PAGE_NAME = "Race Intelligence"
 _MODES = ("LIVE RACE", "HISTORICAL", "AI COACH")
@@ -80,16 +87,30 @@ def _races_with_circuit() -> pd.DataFrame:
     return query(_RACE_SQL)
 
 
+@st.cache_data(show_spinner=False)
+def _laps_race_ids() -> set[int]:
+    """raceIds with fastf1_laps coverage; empty set when the DB lacks laps."""
+    try:
+        return race_ids_with_laps()
+    except Exception:  # noqa: BLE001 - labels degrade gracefully offline
+        return set()
+
+
 @st.cache_resource(show_spinner=False)
-def _provider_cache(name: str):
-    return create_provider(name)
+def _provider_cache(name: str, replay_path: str | None = None):
+    kwargs: dict = {}
+    if name == "replay" and replay_path:
+        kwargs["path"] = Path(replay_path)
+    return create_provider(name, **kwargs)
 
 
 def _live_snapshot():
     """Return (snapshot, error). Never raises on offline providers."""
+    name = st.session_state.get("provider", config.LIVE_PROVIDER)
     try:
-        name = st.session_state.get("provider", config.LIVE_PROVIDER)
-        snap = _provider_cache(name).snapshot()
+        replay_path = (st.session_state.get("replay_path")
+                       if name == "replay" else None)
+        snap = _provider_cache(name, replay_path).snapshot()
         if snap is None:
             return None, f"{name} returned no snapshot (offline)"
         return snap, ""
@@ -529,6 +550,8 @@ def _live_section() -> None:
         index=choices.index(current) if current in choices else 0,
         key="provider_sel")
     st.session_state["provider"] = provider
+    if provider == "replay":
+        replay_snapshot_picker()
     snap, err = _live_snapshot()
     if err or snap is None:
         st.warning(f"No live feed: {err or 'no snapshot'}")
@@ -637,11 +660,19 @@ def _historical_section() -> None:
         return
     years = sorted(races["year"].unique())
     year = st.selectbox("Season", years, index=len(years) - 1, key="intel_year")
-    year_races = races[races["year"] == year]
-    labels = year_races["round"].astype(str) + " · " + year_races["circuit"] + \
-        " · " + year_races["event"].fillna("")
-    round_idx = st.selectbox("Round", range(len(year_races)), index=len(year_races) - 1,
-                             format_func=lambda i: labels.iloc[i], key="intel_round")
+    year_races = races[races["year"] == year].reset_index(drop=True)
+    with_laps = _laps_race_ids()
+    labels = [
+        "R{} · {} · {}{}".format(
+            int(r["round"]), r["circuit"],
+            "" if pd.isna(r["event"]) else str(r["event"]),
+            " · laps ✓" if int(r["raceId"]) in with_laps else " · no lap data")
+        for _, r in year_races.iterrows()
+    ]
+    default_idx = max((i for i, lab in enumerate(labels) if "laps ✓" in lab),
+                      default=len(labels) - 1)
+    round_idx = st.selectbox("Round", range(len(year_races)), index=default_idx,
+                             format_func=lambda i: labels[i], key="intel_round")
     row = year_races.iloc[round_idx]
 
     hero(
@@ -676,7 +707,8 @@ def _historical_section() -> None:
     with col_map:
         st.markdown(intel_label("TRACK MAP"), unsafe_allow_html=True)
         st.plotly_chart(_track_figure(corners), width="stretch")
-        st.caption(f"Geometry from circuit_corners · {'f1.db' if not corners.empty else 'no corners stored'}")
+        st.caption(f"Geometry from circuit_corners · "
+                   f"{'f1.db' if not corners.empty else 'no corner geometry stored for this race (mapped circuits, mostly 2018+)'}")
     with col_tele:
         st.markdown(intel_label("TELEMETRY"), unsafe_allow_html=True)
         if not laps.empty and "time_sec" in laps:
@@ -689,14 +721,18 @@ def _historical_section() -> None:
                         unsafe_allow_html=True)
         else:
             st.markdown(gauge("—", "NO TELEMETRY", 0.0), unsafe_allow_html=True)
-            st.caption("fastf1_laps required (f1.db).")
+            st.caption("Per-lap telemetry (fastf1_laps) only exists for 2018+ "
+                       "races - pick a round labelled 'laps ✓'.")
 
     st.markdown(intel_label("SPEED / DELTA per lap"), unsafe_allow_html=True)
     if not laps.empty:
         st.plotly_chart(_lap_pace_figure(laps), width="stretch")
         st.caption("Real per-lap speed + delta vs race best lap (fastf1_laps).")
     else:
-        st.plotly_chart(_empty_figure("no lap data for this race"), width="stretch")
+        st.plotly_chart(_empty_figure("no lap data for this race "
+                                      "(lap coverage starts 2018)"), width="stretch")
+        st.caption("Per-lap telemetry (fastf1_laps) only exists for 2018+ races "
+                   "in f1.db - pick a round labelled 'laps ✓'.")
 
     col_tyre, col_coach = st.columns(2, gap="medium")
     with col_tyre:
@@ -723,7 +759,8 @@ def _historical_section() -> None:
                     log_error("historical coach failed: %s", exc)
                     st.error(f"Coach failed: {type(exc).__name__}")
         else:
-            st.info("Coach needs fastf1_laps (f1.db) for this race.")
+            st.info("Coach needs fastf1_laps (f1.db) for this race - lap data "
+                    "covers 2018+ only, so pick a round labelled 'laps ✓'.")
 
 
 def _coach_section() -> None:
@@ -731,16 +768,17 @@ def _coach_section() -> None:
     st.caption("Numerical, evidence-based recommendations from f1.db lap data "
                "(2018+). Never coaches on incomplete/incomparable data.")
     try:
-        from f1_analytics.database import driver_list
-        drivers = driver_list()
+        drivers = drivers_with_laps()
         if drivers.empty:
-            st.info("No driver list available.")
+            st.info("No drivers with lap telemetry found (fastf1_laps is "
+                    "empty - run the ingest to populate 2018+ lap data).")
             return
         driver_id = st.selectbox(
-            "Driver", [None, *drivers["driverId"].tolist()],
-            format_func=lambda v: "select a driver" if v is None else '{} ({})'.format(
-                drivers.loc[drivers["driverId"] == v, "forename"].iloc[0] + " " +
-                drivers.loc[drivers["driverId"] == v, "surname"].iloc[0], v),
+            "Driver (with lap telemetry, 2018+)",
+            [None, *drivers["driverId"].tolist()],
+            format_func=lambda v: "select a driver" if v is None else "{} · {} laps".format(
+                drivers.loc[drivers["driverId"] == v, "driver"].iloc[0],
+                int(drivers.loc[drivers["driverId"] == v, "laps"].iloc[0])),
             key="intel_coach_driver")
         if driver_id is not None:
             from f1_analytics.coach import coach_laps

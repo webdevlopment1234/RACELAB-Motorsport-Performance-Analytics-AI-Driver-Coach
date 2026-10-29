@@ -12,7 +12,22 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from ..database import lap_pace, lap_pace_race
+from ..database import lap_pace, lap_pace_race, query
+
+
+def _driver_name(driver_id: int) -> str:
+    """Resolve a driverId to 'Forename Surname'; fall back to the raw id."""
+    try:
+        df = query(
+            "SELECT forename || ' ' || surname AS driver FROM drivers "
+            "WHERE driverId = ?",
+            {"1": int(driver_id)},
+        )
+    except Exception:  # noqa: BLE001 - naming must never break a report
+        return str(driver_id)
+    if df.empty:
+        return str(driver_id)
+    return str(df.iloc[0]["driver"])
 
 
 @dataclass
@@ -52,17 +67,17 @@ def coach_laps(driver_id: int, session: str = "Race",
                year_min: int = 2018, year_max: int = 2026) -> CoachReport:
     laps = lap_pace(session, year_min, year_max)
     if laps.empty:
-        return CoachReport(driver=str(driver_id), n_laps=0,
+        return CoachReport(driver=_driver_name(driver_id), n_laps=0,
                            warnings=["no lap data for this driver/session"])
     mine = laps[laps["driverId"] == driver_id]
     if mine.empty:
-        return CoachReport(driver=str(driver_id), n_laps=0,
+        return CoachReport(driver=_driver_name(driver_id), n_laps=0,
                            warnings=["driver not found in lap dataset"])
     clean = mine[mine["track_status"] == "1"][
         [c for c in ("time_sec", "s1", "s2", "s3", "constructor") if c in mine.columns]
     ].dropna()
     if clean.empty or len(clean) < 3:
-        return CoachReport(driver=str(driver_id),
+        return CoachReport(driver=_driver_name(driver_id),
                            n_laps=int(mine.shape[0]),
                            warnings=["not enough comparable (green-track) laps"])
     report = CoachReport(driver=str(driver_id), n_laps=int(clean.shape[0]))
@@ -123,7 +138,7 @@ def coach_race(race_id: int, driver_id: int) -> CoachReport:
     """
     laps = lap_pace_race(race_id)
     if laps.empty:
-        return CoachReport(driver=str(driver_id), n_laps=0,
+        return CoachReport(driver=_driver_name(driver_id), n_laps=0,
                            warnings=["no fastf1_laps for this race (f1.db required)"])
     green = laps[laps["track_status"].astype(str) == "1"].copy()
     if green.empty:

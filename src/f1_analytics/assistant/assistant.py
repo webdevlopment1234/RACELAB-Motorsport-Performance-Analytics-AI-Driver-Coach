@@ -49,6 +49,33 @@ def _select_topic(question: str) -> str:
     return max(score, key=score.get) if any(score.values()) else "general"
 
 
+_DRIVER_STOPWORDS = frozenset({
+    "about", "for", "the", "in", "on", "at", "of", "and", "vs", "from",
+    "with", "won", "has", "did", "tell", "me",
+})
+
+
+def _driver_hint_candidates(question: str) -> list[str]:
+    """Plausible driver-name phrases: words following 'about/for/on'.
+
+    E.g. 'tell me about max verstappen' -> ['max verstappen', 'verstappen'].
+    The driver tool filters with contains(), so the full phrase is tried
+    first and the single most specific word second.
+    """
+    m = re.search(r"\b(?:about|for|on)\s+((?:[A-Za-z'\-]+(?:\s+|$)){1,3})",
+                  question, re.IGNORECASE)
+    if not m:
+        return []
+    words = [w for w in re.split(r"\s+", m.group(1).strip())
+             if w and w.lower() not in _DRIVER_STOPWORDS]
+    if not words:
+        return []
+    cands = [" ".join(words).lower()]
+    if len(words) > 1:
+        cands.append(words[-1].lower())
+    return cands
+
+
 def _sanitize_query(question: str) -> str | None:
     """Build a safe SELECT from a raw question fragment, or None if unclear."""
     match = re.search(r"(SELECT\s+[\s\S]*?)(?=\?|python|```|$)", question, re.IGNORECASE)
@@ -90,7 +117,16 @@ def ask(question: str, snapshot=None, llm: LLMClient | None = None,
             tools_used.append("sql_query")
 
     if topic in ("driver", "general", "winner"):
-        evidence["driver_analytics"] = TOOLS["driver_analytics"]()
+        # Prefer a driver-filtered lookup ('tell me about max verstappen');
+        # fall back to the unfiltered top-20 when no name can be matched.
+        for cand in _driver_hint_candidates(question):
+            result = TOOLS["driver_analytics"](cand)
+            rows = result.get("value") if isinstance(result, dict) else None
+            if result.get("success") and rows:
+                evidence["driver_analytics"] = result
+                break
+        else:
+            evidence["driver_analytics"] = TOOLS["driver_analytics"]()
         tools_used.append("driver_analytics")
 
     if topic in ("constructor",):
@@ -130,10 +166,14 @@ def ask(question: str, snapshot=None, llm: LLMClient | None = None,
 
     answer_str: str | None = None
     mode = "rule_based"
+    llm_error: str | None = None
     if llm is not None and llm.available:
         answer_str = llm.complete(plangent, _user_prompt(question, evidence))
         if answer_str and not answer_str.startswith("["):
             mode = "llm"
+        else:
+            llm_error = (answer_str or "empty completion")[:120]
+            answer_str = None  # provider error -> graceful rule-based fallback
     if answer_str is None:
         answer_str = run_rule_based(question, evidence, tools_used)
 
@@ -148,7 +188,8 @@ def ask(question: str, snapshot=None, llm: LLMClient | None = None,
         mode=mode,
         tools_used=tools_used,
         evidence_keys=list(evidence.keys()),
-        trace=f"topic={topic}; tools={tools_used or 'none'}",
+        trace=f"topic={topic}; tools={tools_used or 'none'}"
+        + (f"; llm fallback ({llm_error})" if llm_error else ""),
     )
 
 

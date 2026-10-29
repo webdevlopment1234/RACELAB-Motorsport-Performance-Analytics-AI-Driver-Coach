@@ -1,6 +1,10 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # repo-root .env (already-set environment variables win)
+
 
 def _env_path(name: str, default: Path) -> Path:
     raw = os.getenv(name)
@@ -48,7 +52,8 @@ OPENF1_MAX_RETRIES = 3
 # Assistant (Phase 11)
 ASSISTANT_API_KEY_ENV = "F1_ASSISTANT_API_KEY"
 ASSISTANT_BASE_URL_ENV = "F1_ASSISTANT_BASE_URL"
-ASSISTANT_MODEL = "gpt-4o-mini"
+ASSISTANT_MODEL_ENV = "F1_ASSISTANT_MODEL"
+ASSISTANT_MODEL = os.getenv("F1_ASSISTANT_MODEL", "gpt-4o-mini")
 ASSISTANT_TIMEOUT = 30.0
 ASSISTANT_MAX_RETRIES = 2
 ASSISTANT_LOGS_DIR = ROOT_DIR / "database" / "assistant_logs"

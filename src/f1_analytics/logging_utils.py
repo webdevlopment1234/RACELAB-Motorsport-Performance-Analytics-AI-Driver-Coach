@@ -18,7 +18,11 @@ LOGGER_NAME = "f1_analytics"
 _SECRET_PATTERNS = (
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"), "sk-***"),
     (re.compile(r"(api[_-]?key)\s*[:=]\s*\S+", re.IGNORECASE), r"\1=***"),
-    (re.compile(r"\b(Authorization|Bearer)\s+\S+", re.IGNORECASE), r"\1 ***"),
+    (re.compile(r"\bBearer\b[\s:]*\S+", re.IGNORECASE), "Bearer ***"),
+    (
+        re.compile(r"\bAuthorization\b(?![\s:]*Bearer\b)[\s:]*\S+", re.IGNORECASE),
+        "Authorization ***",
+    ),
 )
 
 

@@ -101,7 +101,7 @@ def test_assistant_guardrails():
     from f1_analytics.assistant import LLMClient, ask
     from f1_analytics.live import create_provider
     snap = create_provider("mock").snapshot()
-    llm = LLMClient()  # offline -> rule-based fallback
+    llm = LLMClient(key="")  # no key -> rule-based fallback (hermetic vs .env)
     refusal = ask("DELETE FROM results", snapshot=snap, llm=llm)
     assert refusal.answer.startswith("[refusal]")
     sel = ask("SELECT COUNT(*) AS n FROM races WHERE year=2026", snapshot=snap, llm=llm)
@@ -310,6 +310,133 @@ def test_openf1_offline_provider_init():
     assert prov._init_warnings
     snap = prov.snapshot()
     assert snap.is_empty and snap.source == "openf1"
+
+
+@requires_data
+def test_query_normalizes_numpy_params():
+    """Regression: sqlite3 binds numpy int64 params as BLOBs, silently
+    returning zero rows; Streamlit selectboxes hand back numpy scalars."""
+    import numpy as np
+
+    from f1_analytics.database import race_results
+    df = race_results(year=np.int64(2026))
+    assert not df.empty, "np.int64 year param must match like a Python int"
+    by_int = race_results(year=2026)
+    assert len(df) == len(by_int)
+
+
+@requires_data
+def test_coach_driver_list_is_laps_only():
+    from f1_analytics.database import drivers_with_laps, race_ids_with_laps, query
+
+    rows = drivers_with_laps()
+    assert not rows.empty and set(rows.columns) >= {"driverId", "driver", "laps"}
+    lap_drivers = query("SELECT DISTINCT driverId FROM fastf1_laps")
+    assert set(rows["driverId"]) == set(lap_drivers["driverId"])
+    # pre-telemetry-era drivers (no 2018+ laps) must be excluded
+    all_drivers = query("SELECT driverId FROM drivers")
+    assert len(rows) < len(all_drivers)
+
+
+def test_replay_provider_newest_pick_and_error():
+    from f1_analytics import config
+    from f1_analytics.data import DataNotFoundError
+    from f1_analytics.live import ReplayProvider, create_provider, save_snapshot
+
+    original = config.LIVE_REPLAYS_DIR
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            config.LIVE_REPLAYS_DIR = Path(tmp)
+            # no snapshots -> actionable error
+            try:
+                create_provider("replay")
+                raise AssertionError("expected DataNotFoundError with no snapshots")
+            except DataNotFoundError as exc:
+                assert "replay" in str(exc).lower()
+
+            # oldest then newest; auto-pick must take the newest
+            snap_old = create_provider("mock").snapshot()
+            save_snapshot(snap_old, Path(tmp) / "old.json")
+            import time
+            time.sleep(0.05)
+            snap_new = create_provider("mock").snapshot()
+            save_snapshot(snap_new, Path(tmp) / "new.json")
+
+            prov = create_provider("replay")
+            assert prov.path.name == "new.json"
+            assert prov.refresh().source == "mock"
+
+            # explicit string path is coerced
+            prov2 = create_provider("replay", path=str(Path(tmp) / "old.json"))
+            assert prov2.path == Path(tmp) / "old.json"
+    finally:
+        config.LIVE_REPLAYS_DIR = original
+
+
+@requires_data
+def test_assistant_driver_question_answers():
+    """Regression: driver questions must produce the driver profile, not the
+    generic 'I need more specific coverage' fallback."""
+    from f1_analytics.assistant import LLMClient, ask
+
+    llm = LLMClient(key="")  # no key -> rule-based fallback (hermetic vs .env)
+    ans = ask("tell me about max verstappen", llm=llm)
+    assert "Max Verstappen" in ans.answer, ans.answer
+    assert "wins" in ans.answer and "starts" in ans.answer
+    assert "I need more specific coverage" not in ans.answer
+
+    circ = ask("who won at monaco", llm=llm)
+    assert "Monaco" in circ.answer and "winner" in circ.answer.lower()
+
+
+def test_assistant_model_env_override():
+    """F1_ASSISTANT_MODEL must override the default model (e.g. selecting a
+    Groq model) and flow into LLMClient defaults."""
+    import importlib
+    import os
+
+    import f1_analytics.assistant.llm as llm_mod
+    import f1_analytics.config as config
+
+    saved = os.environ.pop("F1_ASSISTANT_MODEL", None)
+    try:
+        os.environ["F1_ASSISTANT_MODEL"] = "groq-test-model"
+        importlib.reload(config)
+        importlib.reload(llm_mod)
+        assert config.ASSISTANT_MODEL == "groq-test-model"
+        assert llm_mod.LLMClient().model == "groq-test-model"
+    finally:
+        if saved is not None:
+            os.environ["F1_ASSISTANT_MODEL"] = saved
+        else:
+            os.environ.pop("F1_ASSISTANT_MODEL", None)
+        importlib.reload(config)
+        importlib.reload(llm_mod)
+
+
+@requires_data
+def test_predictions_row_scoring_keeps_numeric_dtypes():
+    """Regression: the Predictions page must score rows via .iloc[[i]]
+    (dtype-preserving DataFrame slice). The old .iloc[i].to_frame().T path
+    can promote numeric columns to object dtype (depends on row content /
+    pandas version), making predict_df reject features like grid_position."""
+    from f1_analytics.features import training_table
+    from f1_analytics.models import predict_df, predictor
+
+    df = training_table()
+    assert df["grid_position"].dtype.kind in "fiu"
+    try:
+        artifact = predictor("finish")
+    except Exception:  # noqa: BLE001
+        print("SKIP test_predictions_row_scoring_keeps_numeric_dtypes: no model artifacts")
+        return
+    if artifact.model is None:
+        print("SKIP test_predictions_row_scoring_keeps_numeric_dtypes: unfitted model")
+        return
+    # dtype-preserving slices must score successfully for several rows
+    for idx in (0, len(df) // 2, len(df) - 1):
+        out = predict_df(artifact, df.iloc[[idx]])
+        assert len(out) == 1 and "finish_pred" in out.columns
 
 
 def test_dashboard_smoke():

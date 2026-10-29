@@ -33,15 +33,22 @@ from f1_analytics.analytics import (  # noqa: E402
 )
 from f1_analytics.assistant import LLMClient, ask  # noqa: E402
 from f1_analytics.coach import coach_laps  # noqa: E402
-from f1_analytics.database import data_source, query, race_calendar, race_results  # noqa: E402
+from f1_analytics.database import (
+    data_source,
+    drivers_with_laps,
+    query,
+    race_calendar,
+    race_results,
+)
 from f1_analytics.data import DataNotFoundError, asset_status  # noqa: E402
 from f1_analytics.features import feature_audit  # noqa: E402
-from f1_analytics.live import create_provider  # noqa: E402
+from f1_analytics.live import create_provider, list_replays, save_snapshot  # noqa: E402
 from f1_analytics.logging_utils import log_error  # noqa: E402
 from f1_analytics.models import FeatureSchemaError, ModelArtifactError, models_status, predict_df, predictor  # noqa: E402
 from f1_analytics.preprocessing import validation_summary  # noqa: E402
 
 from intel import page_race_intel  # noqa: E402
+from live_ui import replay_snapshot_picker  # noqa: E402
 
 PAGES = ("Analytics", "Race Intelligence", "Drivers", "Constructors", "Circuits",
          "LIVE", "Predictions", "Coach", "Assistant", "Data Health")
@@ -65,15 +72,20 @@ def _circuit_cache():
 
 
 @st.cache_resource(show_spinner=False)
-def _provider_cache(name: str):
-    return create_provider(name)
+def _provider_cache(name: str, replay_path: str | None = None):
+    kwargs: dict = {}
+    if name == "replay" and replay_path:
+        kwargs["path"] = Path(replay_path)
+    return create_provider(name, **kwargs)
 
 
 def _live_with_error_handling():
     """Return (snapshot, error_str). Never raises on offline providers."""
     try:
         name = st.session_state.get("provider", config.LIVE_PROVIDER)
-        prov = _provider_cache(name)
+        replay_path = (st.session_state.get("replay_path")
+                       if name == "replay" else None)
+        prov = _provider_cache(name, replay_path)
         snap = prov.snapshot()
         if snap is None:
             return None, f"{name} returned no snapshot (offline)"
@@ -213,6 +225,8 @@ def page_live():
                             index=0, key="provider_sel")
     if "provider" not in st.session_state or st.session_state["provider"] != provider:
         st.session_state["provider"] = provider
+    if provider == "replay":
+        replay_snapshot_picker()
     snap, err = _live_with_error_handling()
     if err:
         hero(
@@ -241,6 +255,10 @@ def page_live():
         st.success("RACE IN PROGRESS")
     else:
         st.info("Not currently live (offline/last known).")
+    if st.button("Save snapshot as replay", key="live_save_replay"):
+        out = save_snapshot(snap)
+        st.success(f"Replay saved: {out.name} - switch Provider to 'replay' "
+                   "to replay it (or pick it from the snapshot list).")
     st.subheader(f"{snap.session.get('session_name', 'Session')} · "
                  f"{snap.session.get('circuit_short_name', '')}")
 
@@ -358,9 +376,13 @@ def page_predictions():
         range(len(rows)),
         format_func=lambda i: rows.iloc[i].get("code", f"row {i}"),
     )
-    record = rows.iloc[sample]
-    st.write("Scoring row:")
-    st.json(record.to_dict())
+    # Score with a dtype-preserving DataFrame slice. NEVER rebuild the row via
+    # .iloc[i].to_frame().T: a mixed-dtype Series promotes EVERY column to
+    # object dtype, and predict_df would then reject numeric features such as
+    # grid_position ("must be numeric for prediction").
+    scoring = rows.iloc[[sample]].copy()
+    with st.expander("Scoring row (feature values)"):
+        st.json(rows.iloc[sample].to_dict())
 
     # 4) Score each task; per-task failures are isolated and actionable.
     for task in ("finish", "is_dnf", "is_podium", "is_winner"):
@@ -371,7 +393,7 @@ def page_predictions():
                 st.error(f"**{task}**: artifact invalid ({'; '.join(problems)}). "
                          "Re-train with `f1-analytics train`.")
                 continue
-            out = predict_df(artifact, record.to_frame().T)
+            out = predict_df(artifact, scoring)
             st.markdown(f"**{task}** -> {out.iloc[0].to_dict()}")
             st.caption(f"model {artifact.data_version} · split {artifact.split} · "
                        f"inputs={len(artifact.input_columns)}")
@@ -389,19 +411,17 @@ def page_coach():
                "incomplete/incomparable data.")
     n = 0
     try:
-        driver_rows = query(
-            "SELECT driverId, forename || ' ' || surname AS driver FROM drivers "
-            "ORDER BY driverId LIMIT 500"
-        )
+        driver_rows = drivers_with_laps()
         n = len(driver_rows)
         def _driver_label(v) -> str:
             if v is None:
                 return "— select driver —"
-            name = driver_rows.loc[driver_rows["driverId"] == v, "driver"].iloc[0]
-            return str(name)
+            row = driver_rows[driver_rows["driverId"] == v].iloc[0]
+            return f"{row['driver']} · {int(row['laps'])} laps"
 
         driver_id = st.selectbox(
-            "Driver", [None, *list(driver_rows["driverId"])],
+            "Driver (with lap telemetry, 2018+)",
+            [None, *list(driver_rows["driverId"])],
             format_func=_driver_label,
             index=0)
         if driver_id is not None:
@@ -415,7 +435,7 @@ def page_coach():
         log_error("coach failed: %s", exc)
         st.error(f"Coach unavailable: {type(exc).__name__}")
         _show_traceback(exc)
-    st.caption(f"Drivers available: {n}.")
+    st.caption(f"Drivers with lap telemetry: {n} (lap data covers 2018+ only).")
 
 
 def page_assistant():

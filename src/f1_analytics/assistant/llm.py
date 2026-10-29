@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,11 +84,46 @@ class LLMClient:
         return None
 
 
+def _match_driver_row(q: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """First driver_analytics row whose name appears in the question."""
+    rows = (evidence.get("driver_analytics") or {}).get("value")
+    if not isinstance(rows, list):
+        return None
+    tokens = re.findall(r"[a-z\-]{4,}", q)
+    for row in rows:
+        name = str(row.get("driver", "")).lower()
+        if not name:
+            continue
+        if name in q or any(t in name for t in tokens):
+            return row
+    return None
+
+
+def _match_circuit_row(q: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """First circuit_analytics row matching the question's circuit token."""
+    rows = (evidence.get("circuit_analytics") or {}).get("value")
+    if not isinstance(rows, list):
+        return None
+    tokens = re.findall(r"[a-z\-]{4,}", q)
+    for row in rows:
+        hay = " ".join(str(row.get(c, "")) for c in
+                       ("name", "location", "country", "circuitRef")).lower()
+        if any(t in hay for t in tokens):
+            return row
+    return None
+
+
 def run_rule_based(question: str, evidence: dict[str, Any], tools_used: list[str]) -> str:
     """Deterministic answer from tool output only (works offline)."""
     from ..analytics import driver_summary_table
     q = question.lower()
     topics: list[str] = []
+    driver_row = _match_driver_row(q, evidence)
+    if driver_row is not None:
+        topics.append(f"driver · {driver_row.get('driver')}")
+    circuit_row = _match_circuit_row(q, evidence)
+    if circuit_row is not None:
+        topics.append(f"circuit · {circuit_row.get('name')}")
     if any(w in q for w in ("win", "wins", "victor", "champion")):
         topics.append("recent win leaders")
     if any(w in q for w in ("monaco", "circuit", "location", "won at")):
@@ -136,6 +172,35 @@ def run_rule_based(question: str, evidence: dict[str, Any], tools_used: list[str
             lines.append(f"Data source {st.get('source')}, fetched {st.get('fetched_at')}.")
         else:
             lines.append("No live feed available right now.")
+    if driver_row is not None:
+        r = driver_row
+        lines.append(f"Driver profile: {r.get('driver')} (code {r.get('code')})")
+        for col, label in (("starts", "starts"), ("wins", "wins"),
+                           ("podiums", "podiums"), ("avg_finish", "avg finish"),
+                           ("dnf_rate", "DNF rate"), ("overall_rating", "overall rating")):
+            v = r.get(col)
+            if v is None or (isinstance(v, float) and v != v):  # NaN guard
+                continue
+            if isinstance(v, float):
+                lines.append(f"- {label}: {v:.3f}")
+            else:
+                lines.append(f"- {label}: {v}")
+        lines.append("Ask e.g. 'win leaders' for the all-time table, or use the "
+                     "Coach page for lap-level findings.")
+    if circuit_row is not None:
+        r = circuit_row
+        lines.append(f"Circuit: {r.get('name')} ({r.get('location')}, {r.get('country')})")
+        if r.get("most_common_winner"):
+            lines.append(f"- most frequent winner: {r['most_common_winner']} "
+                         f"({int(r['wins'])} wins)")
+        if r.get("races_held") is not None:
+            lines.append(f"- races held: {int(r['races_held'])}")
+        for col in ("track_type", "overtaking_difficulty", "pit_time_loss_s",
+                    "safety_car_prob", "rain_prob"):
+            v = r.get(col)
+            if v is None or (isinstance(v, float) and v != v):
+                continue
+            lines.append(f"- {col.replace('_', ' ')}: {v}")
     if "recent win leaders" in topics:
         try:
             df = driver_summary_table()

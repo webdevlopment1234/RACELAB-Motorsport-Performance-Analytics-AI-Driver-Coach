@@ -15,6 +15,7 @@ import sqlite3
 from functools import lru_cache
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..data import DataNotFoundError, connect_sqlite, db_available, load_kaggle_all
@@ -104,6 +105,18 @@ def _actionable_missing_table(table: str) -> DataNotFoundError:
     )
 
 
+def _bindable_params(params: dict[str, Any]) -> tuple:
+    """Convert params to bind-safe Python natives.
+
+    sqlite3 (Python 3.10) binds numpy scalars as BLOBs without raising, so an
+    equality like ``r.year = ?`` never matches and queries silently return
+    zero rows. Streamlit selectboxes hand back numpy int64s when options come
+    from ``pandas .unique()``, so every param is normalized here.
+    """
+    return tuple(v.item() if isinstance(v, np.generic) else v
+                 for v in params.values())
+
+
 def query(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Run a SELECT. Dict params are positional by insertion order."""
     con = _conn()
@@ -111,7 +124,7 @@ def query(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     close_after = not csv_mode
     try:
         if params:
-            params = tuple(params.values())
+            params = _bindable_params(params)
         return pd.read_sql(sql, con, params=params or None)
     except sqlite3.OperationalError as exc:
         if csv_mode:
@@ -281,3 +294,29 @@ def lap_pace_race(race_id: int) -> pd.DataFrame:
         """,
         {"race_id": race_id},
     )
+
+
+def drivers_with_laps() -> pd.DataFrame:
+    """Drivers that actually have fastf1_laps rows (telemetry era, 2018+).
+
+    The coach only works on lap data, so its driver pickers must list only
+    these; the full driver table spans 1950+ and would yield empty reports.
+    f1.db only - raises DataNotFoundError under the CSV fallback.
+    """
+    return query(
+        """
+        SELECT d.driverId, d.code, d.forename, d.surname,
+               d.forename || ' ' || d.surname AS driver,
+               COUNT(*) AS laps
+        FROM fastf1_laps l
+        JOIN drivers d ON d.driverId = l.driverId
+        GROUP BY d.driverId
+        ORDER BY d.surname
+        """
+    )
+
+
+def race_ids_with_laps() -> set[int]:
+    """raceIds that have any fastf1_laps rows (for data-availability labels)."""
+    df = query("SELECT DISTINCT raceId FROM fastf1_laps")
+    return set() if df.empty else set(df["raceId"].astype(int))
