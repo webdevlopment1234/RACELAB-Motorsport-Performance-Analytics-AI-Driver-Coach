@@ -4,9 +4,31 @@ Motorsport performance analytics and an AI driver coach built on Formula 1
 data: historical race analytics, post-qualifying race prediction, pace and
 strategy coaching, live timing, and an LLM-powered race assistant.
 
-The core package works **fully offline** against a bundled SQLite dataset.
-Live timing and the LLM assistant are optional extras that light up with a
-network connection.
+## Architecture
+
+Three layers with clean separation:
+
+```
+┌────────────────────┐      ┌─────────────────────┐      ┌──────────────────────┐
+│  frontend/ (Next.js)│ HTTP │  backend/ (Flask)   │ calls │  src/f1_analytics/   │
+│  pages + charts +   │─────▶│  app factory,       │─────▶│  analytics, live,    │
+│  live polling       │ JSON │  blueprints, services│      │  models, coach, DB   │
+└────────────────────┘      └─────────────────────┘      └──────────────────────┘
+```
+
+- **Front end — Next.js 15 (App Router, TypeScript)**: all 10 dashboard pages
+  (Race Intelligence, Analytics, Drivers, Constructors, Circuits, LIVE,
+  Predictions, Coach, Assistant, Data Health), dark RACELAB skin, Recharts
+  visualisation, 5-second live polling. Talks only REST.
+- **Back end — Flask 3**: app factory + Blueprint API router + service layer
+  (live-session registry, background training jobs, report adapters) +
+  JSON-safe DataFrame serialisation. CORS-restricted to the front-end origin.
+- **Core — `f1_analytics` Python package**: untouched domain logic — analytics,
+  SQLite queries, live providers (OpenF1 / Mock / Replay), models, coach and
+  the LLM assistant. Works fully offline against the bundled dataset.
+
+The old Streamlit dashboard (`dashboard/`) is kept as a legacy fallback and no
+longer part of the primary front end.
 
 ---
 
@@ -14,161 +36,121 @@ network connection.
 
 | Area | What it does |
 | --- | --- |
-| **Race Intelligence** | Flagship dashboard screen: live/historical race view with P1-P4 timing, a track map, telemetry gauges, a speed/throttle/brake/gear/delta trace, tyre strategy, and the AI coach. Works offline. |
-| **Analytics** | Driver, constructor and circuit summaries queried from the local database. |
-| **Predictions** | Post-qualifying model artifacts (`finish`, `is_dnf`, `is_podium`, `is_winner`) trained on chronologically split data. |
-| **Coach** | Lap-by-lap pace and strategy coaching reports (tyre degradation, pit windows, pace deltas). |
-| **LIVE** | Live timing through pluggable providers: `openf1` (free, no API key), `mock` (offline demo), and `replay` (saved snapshots from `dataset/live_replays/`). |
-| **Assistant** | LLM race assistant with tool use; gracefully falls back to a built-in rule-based analyser when no API key is configured. |
-| **Data Health** | Validation and drift suite over the bundled dataset. |
-
----
+| **Race Intelligence** | Flagship screen: live/track session view with leaderboard, weather, race control, intervals, stints/tyre strategy and the AI coach driven by live polling. |
+| **Analytics** | Driver, constructor and circuit summaries plus full race calendar (1950-2024+) from the bundled SQLite database. |
+| **Predictions** | Post-qualifying models (`finish`, `is_dnf`, `is_podium`, `is_winner`) with status, background training and scoring form generated from each artifact's input contract. |
+| **Coach** | Evidence-based coaching: race pace gap, sector consistency, best-lap tyre context — with explicit caveats when data is insufficient. |
+| **LIVE** | Providers: `openf1` (free API, no key), `mock` (offline), `replay` (saved snapshots from `dataset/live_replays/`). Preview before starting, save snapshots for weekday analysis. |
+| **Assistant** | Tool-using LLM assistant; rule-based fallback when no API key is set. |
+| **Data Health** | Data asset status + validation/drift suite (CSV vs SQLite vs parquet vs tracks.yaml). |
 
 ## Requirements
 
-- Python 3.10 – 3.12
-- Optional: internet access for live timing (OpenF1) and LLM features.
+- **Back end**: Python 3.10 – 3.12, Node 18+ only needed for the front end.
+- Optional: internet connection for live OpenF1 timing and LLM features.
+- Everything in the core package runs fully offline against the bundled database.
 
-Everything else runs fully offline against the bundled local database.
+## Back end setup (Flask API)
 
-## Installation
-
-Create and activate a virtual environment, then install the profile you
-need. All pins, including versioned extras, live in `pyproject.toml`
-(PEP 621) — that file is the source of truth.
-
-### Core (everything that works offline)
+Create/activate a virtual environment, then install core + server extra:
 
 ```powershell
-pip install -e .
+pip install -e .[server]      # adds flask + flask-cors
 ```
 
-or equivalently:
+with full extras (live timing / assistant / dev tests):
 
 ```powershell
-pip install -r requirements.txt
+pip install -e .[live,assistant,server,dev]
 ```
 
-### Live timing extras
+Run the API (serves http://127.0.0.1:5000):
 
 ```powershell
-pip install -e .[live]
+python backend/run.py
 ```
 
-Adds `fastf1>=3.8` for telemetry-aware live timing. Note: the default live
-provider (`openf1`) and the offline `mock`/`replay` providers do **not**
-require `fastf1`.
+Key endpoints (all JSON):
 
-### LLM assistant extra
+```text
+GET  /api/health                     GET  /api/data-source
+GET  /api/data/status                GET  /api/data/validations
+GET  /api/calendar                   GET  /api/races/<id>/results
+GET  /api/standings?year=2023        GET  /api/drivers | /api/drivers/<id>
+GET  /api/drivers/head-to-head?a=&b= GET  /api/constructors[...] (+pit-stops, points)
+GET  /api/circuits | /winners | /pace
+GET  /api/models/status              POST /api/models/train     (background job)
+GET  /api/models/train/status        POST /api/predict          {task, row}
+GET  /api/coach/laps|race            POST /api/assistant/ask    {question}
+GET  /api/live/providers|replays     POST /api/live/session     {provider}
+GET  /api/live/snapshot              POST /api/live/refresh
+POST /api/live/save-snapshot         GET  /api/live/coach       GET /api/live/preview?provider=mock
+```
+
+Loads: CORS origins/hosts/ports are env-configurable (`F1_CORS_ORIGINS`,
+`F1_API_HOST`, `F1_API_PORT`).
+
+## Front end setup (Next.js)
 
 ```powershell
-pip install -e .[assistant]
+cd frontend
+npm install
+npm run dev
 ```
 
-Adds `openai>=1.30`. Without an API key the assistant automatically uses
-its rule-based fallback, so nothing breaks if this extra is skipped.
-
-### Development / tests
-
-```powershell
-pip install -e .[dev]          # core + pytest
-pip install -e .[live,assistant,dev]   # all extras
-```
+Open http://localhost:3000. Point the app at a non-default API with
+`NEXT_PUBLIC_API_URL`; the default is `http://localhost:5000`.
 
 ## Configuration
 
 Defaults live in `src/f1_analytics/config.py`. A repo-root `.env` file is
-loaded automatically (via `python-dotenv`); already-set environment
-variables always win.
+loaded automatically; already-set environment variables always win.
 
-### Assistant settings
+### Assistant & paths
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `F1_ASSISTANT_API_KEY` | *(empty)* | OpenAI-compatible API key |
 | `F1_ASSISTANT_BASE_URL` | *(empty)* | Optional custom API base URL |
 | `F1_ASSISTANT_MODEL` | `gpt-4o-mini` | Model name for the assistant |
-
-Without an API key the assistant uses its rule-based fallback.
-
-### Path overrides
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
 | `F1_ROOT_DIR` | repo root | Fallback base for data/models |
 | `F1_DATA_DIR` | `dataset/` | Dataset directory |
 | `F1_MODELS_DIR` | `models/` | Trained model artifacts |
 
-Trained artifacts (`.joblib` + `manifest.json`) are written to `models/`
-and are gitignored.
+Without an API key the assistant uses its rule-based fallback, so nothing
+breaks.
 
----
+### CLI (offline, no front end needed)
 
-## Quickstart
-
-### 1. Command line
-
-Installing the package exposes an `f1-analytics` command:
+Installing the package still exposes the `f1-analytics` command:
 
 ```powershell
-f1-analytics data-status      # shows each expected data file, present/missing
-                              #   (never creates or downloads anything)
-f1-analytics validate-data    # runs the full validation / drift suite
-f1-analytics models-status    # dry-run readiness check for model artifacts
-f1-analytics train            # trains finish/dnf/podium/winner artifacts
-f1-analytics doctor           # data-status + models-status + query source summary
+f1-analytics data-status      # show which data files are present/missing
+f1-analytics validate-data    # run the validation / drift suite
+f1-analytics models-status    # dry-run check for model artifacts
+f1-analytics train            # train finish/dnf/podium/winner artifacts
+f1-analytics doctor           # data-status + models-status + source summary
 ```
 
-- Missing required data → the CLI prints the exact recovery command.
-- `validate-data` and `models-status` exit non-zero on failure, so they are
-  safe to use as CI gates.
+Model tasks train on chronological splits (train ≤ 2022, val 2023-2024,
+test 2025, holdout 2026+); artifacts are written to `models/` and gitignored.
 
-### 2. Training the models
+## Tests
 
 ```powershell
-f1-analytics train
+python tests/run_tests.py                # offline, pytest-free runner
+python -m pytest tests -q                # via pytest
+.venv/Scripts/python.exe -m pytest tests/test_api.py -q   # Flask API only
 ```
 
-Trains all four post-qualifying tasks with chronological splits
-(train ≤ 2022, validation 2023–2024, test 2025, holdout 2026+).
-
-### 3. Streamlit dashboard
-
-```powershell
-streamlit run dashboard/app.py
-```
-
-Pages: **Analytics**, **Race Intelligence**, **Drivers**, **Constructors**,
-**Circuits**, **LIVE**, **Predictions**, **Coach**, **Assistant**,
-**Data Health**.
-
-On the LIVE page, start a session with `openf1` (or `mock` for an offline
-demo) and press **Save snapshot as replay** — the snapshot lands in
-`dataset/live_replays/` and the `replay` provider can then re-run the
-session offline at any time (fully functional without internet or fastf1).
-
-### 4. Tests
-
-Offline smoke tests with a pytest-free runner. Data-dependent tests are
-skipped automatically when the local dataset is absent, so the suite also
-passes in a clean CI checkout:
-
-```powershell
-python tests/run_tests.py
-```
-
-or with pytest:
-
-```powershell
-python -m pytest tests -q
-```
-
----
+39 tests: Streamlit-free offline core tests plus 9 Flask API smoke tests
+that use the app factory's test client (no dataset required; data-dependent
+checks degrade gracefully).
 
 ## Repository layout
 
 ```
-src/f1_analytics/   # core package
+src/f1_analytics/   # core package (domain logic)
   analytics/        # driver / constructor / circuit summaries
   assistant/        # LLM race assistant + rule-based fallback
   coach/            # pace & strategy coaching reports
@@ -178,8 +160,15 @@ src/f1_analytics/   # core package
   models/           # race prediction artifacts (finish/dnf/podium/winner)
   preprocessing/    # data validation & schemas
   simulation/       # race simulation
-dashboard/          # Streamlit app (app.py, intel.py, live_ui.py, skin.py)
+backend/            # Flask API server
+  app/              # create_app factory, blueprints/, services/, config, errors
+  run.py            # dev entrypoint (python backend/run.py)
+frontend/           # Next.js 15 App Router app
+  app/              # the 10 pages (client components + polling)
+  components/       # NavBar, DataTable, panels/pills/findings
+  lib/              # typed API client (api.ts) + polling hooks (useApi.ts)
 dataset/            # local dataset + saved live replay snapshots
 models/             # trained model artifacts (gitignored outputs)
-tests/              # offline smoke tests
+tests/              # core + Flask API smoke tests
+dashboard/          # legacy Streamlit front end (kept as fallback)
 ```

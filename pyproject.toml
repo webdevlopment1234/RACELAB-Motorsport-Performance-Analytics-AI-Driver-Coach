@@ -29,6 +29,7 @@ f1-analytics = "f1_analytics.cli:main"
 live = ["fastf1>=3.8"]
 assistant = ["openai>=1.30"]
 dev = ["pytest>=8.0"]
+server = ["flask>=3.0", "flask-cors>=4.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
